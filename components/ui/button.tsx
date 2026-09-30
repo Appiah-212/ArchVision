@@ -24,7 +24,7 @@ export function Button({
     "btn",
     `btn--${variant}`,
     `btn--${size}`,
-    fullWidth ? "btn--full-width" : "",
+    fullWidth ? "btn--full" : "",
     className,
   ]
     .filter(Boolean)

@@ -62,7 +62,7 @@ export default function Home() {
 
                 </div>
                  <h3>Upload your floor plan</h3>
-                 <p>Supports JPG, PNG, formats up to 10MB</p>
+                 <p>Supports JPG, PNG, formats up to 50MB</p>
               </div>
 
               <Upload onComplete={handleUploadComplete}/>           
@@ -98,13 +98,13 @@ export default function Home() {
                   <h3>Project Elbob</h3>
                   <div className="meta">
                     <Clock size={12}/>
-                    <span>{new Date('09.29.2026').toLocaleDateString()}</span>
+                    <span>{new Date('2026-09-29').toLocaleDateString()}</span>
                     <span>By Kubiman</span>
                   </div>
                 </div>
 
                 <div className="arrow">
-                  <ArrowUpRight size="{18}"/>
+                  <ArrowUpRight size={18}/>
 
                 </div>
               </div>

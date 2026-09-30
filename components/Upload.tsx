@@ -27,6 +27,10 @@ const Upload = ({ onComplete = () => {} }: UploadProps) => {
         setProgress(0);
 
         const reader = new FileReader();
+        reader.onerror = () => {
+            setFile(null);
+            setProgress(0);
+        }
 
         reader.onload = () => {
             const result = reader.result;
