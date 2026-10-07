@@ -1,3 +1,4 @@
+import { validateFloorPlanFile } from '../lib/file-validation';
 import { CheckCircle2, ImageIcon, UploadIcon } from 'lucide-react';
 import React, { useState } from 'react';
 import { useOutletContext } from 'react-router';
@@ -19,11 +20,21 @@ const Upload = ({ onComplete = async () => undefined }: UploadProps) => {
     const { isSignedIn } = useOutletContext<AuthContext>();
 
     const processFile = (selectedFile: File) => {
-        if (!isSignedIn || !selectedFile) {
-            return;
-        }
+    if (!isSignedIn || !selectedFile) {
+        return;
+    }
 
-        setFile(selectedFile);
+    const validation = validateFloorPlanFile(selectedFile);
+
+    if (!validation.valid) {
+        setError(validation.error);
+        setFile(null);
+        setProgress(0);
+        return;
+    }
+
+    setError(null);
+    setFile(selectedFile);
         setProgress(0);
 
         const intervalId = window.setInterval(() => {
@@ -86,6 +97,7 @@ const Upload = ({ onComplete = async () => undefined }: UploadProps) => {
 
         handleFiles(event.dataTransfer.files);
     };
+    const [error, setError] = useState<string | null>(null);
 
     return (
         <div className="upload">
@@ -117,6 +129,11 @@ const Upload = ({ onComplete = async () => undefined }: UploadProps) => {
                             )}
                         </p>
                         <p className="help">Maximum file size 50 MB.</p>
+                        {error && (
+                        <p role="alert" className="upload-error">
+                            {error}
+                        </p>
+                        )}
                     </div>
                 </div>
             ) : (
