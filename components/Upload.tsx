@@ -8,10 +8,10 @@ import {
 } from '../lib/constants';
 
 type UploadProps = {
-    onComplete?: (base64: string) => void;
+    onComplete?: (file: File) => Promise<boolean | void> | boolean | void;
 };
 
-const Upload = ({ onComplete = () => {} }: UploadProps) => {
+const Upload = ({ onComplete = async () => undefined }: UploadProps) => {
     const [file, setFile] = useState<File | null>(null);
     const [isDragging, setIsDragging] = useState(false);
     const [progress, setProgress] = useState(0);
@@ -26,38 +26,20 @@ const Upload = ({ onComplete = () => {} }: UploadProps) => {
         setFile(selectedFile);
         setProgress(0);
 
-        const reader = new FileReader();
-        reader.onerror = () => {
-            setFile(null);
-            setProgress(0);
-        }
+        const intervalId = window.setInterval(() => {
+            setProgress((currentProgress) => {
+                const nextProgress = Math.min(currentProgress + PROGRESS_STEP, 100);
 
-        reader.onload = () => {
-            const result = reader.result;
-            const base64 = typeof result === 'string' ? result.split(',')[1] ?? result : '';
+                if (nextProgress >= 100) {
+                    window.clearInterval(intervalId);
+                    window.setTimeout(() => {
+                        onComplete(selectedFile);
+                    }, REDIRECT_DELAY_MS);
+                }
 
-            if (!base64) {
-                setProgress(0);
-                return;
-            }
-
-            const intervalId = window.setInterval(() => {
-                setProgress((currentProgress) => {
-                    const nextProgress = Math.min(currentProgress + PROGRESS_STEP, 100);
-
-                    if (nextProgress >= 100) {
-                        window.clearInterval(intervalId);
-                        window.setTimeout(() => {
-                            onComplete(base64);
-                        }, REDIRECT_DELAY_MS);
-                    }
-
-                    return nextProgress;
-                });
-            }, PROGRESS_INTERVAL_MS);
-        };
-
-        reader.readAsDataURL(selectedFile);
+                return nextProgress;
+            });
+        }, PROGRESS_INTERVAL_MS);
     };
 
     const handleFiles = (selectedFiles: FileList | File[] | null) => {

@@ -21,6 +21,45 @@ export const getOrCreateHostingConfig = async (): Promise<HostingConfig | null> 
     }
 }
 
+const writeBlobToHosting = async ({ hosting, blob, projectId, label, sourceUrl }: {
+    hosting: HostingConfig | null;
+    blob: Blob;
+    projectId: string;
+    label: "source" | "rendered";
+    sourceUrl?: string;
+}): Promise<HostedAsset | null> => {
+    if (!hosting || !blob) return null;
+
+    const contentType = blob.type || "";
+    const ext = getImageExtension(contentType, sourceUrl || "");
+    const dir = `projects/${projectId}`;
+    const filePath = `${dir}/${label}.${ext}`;
+    const uploadFile = new File([blob], `${label}.${ext}`, { type: contentType });
+
+    await puter.fs.mkdir(dir, { createMissingParents: true });
+    await puter.fs.write(filePath, uploadFile);
+
+    const hostedUrl = getHostedUrl({ subdomain: hosting.subdomain }, filePath);
+    return hostedUrl ? { url: hostedUrl } : null;
+};
+
+export const uploadFileToHosting = async ({ hosting, file, projectId, label}: {
+    hosting: HostingConfig | null;
+    file: File | Blob;
+    projectId: string;
+    label: "source" | "rendered";
+}): Promise<HostedAsset | null> => {
+    if (!hosting) return null;
+
+    return writeBlobToHosting({
+        hosting,
+        blob: file,
+        projectId,
+        label,
+        sourceUrl: file instanceof File ? file.name : undefined,
+    });
+};
+
 export const uploadImageToHosting = async ({ hosting, url, projectId, label}: StoreHostedImageParams): Promise<HostedAsset | null> => {
 
     if(!hosting || !url) return null;
@@ -34,21 +73,13 @@ export const uploadImageToHosting = async ({ hosting, url, projectId, label}: St
 
         if(!resolved) return null;
 
-        const contentType = resolved.contentType || resolved.blob.type || '';        
-        const ext = getImageExtension(contentType, url);
-        const dir = `projects/${projectId}`;
-        const filePath = `{dir}/${label}.${ext}`;
-
-        const uploadFile = new File([resolved.blob], `${label}.${ext}`, {
-            type: contentType,
+        return writeBlobToHosting({
+            hosting,
+            blob: resolved.blob,
+            projectId,
+            label,
+            sourceUrl: url,
         });
-
-        await puter.fs.mkdir(dir, { createMissingParents: true });
-        await puter.fs.write(filePath, uploadFile);
-
-        const hostedUrl = getHostedUrl({ subdomain: hosting.subdomain }, filePath);
-
-        return hostedUrl ? { url: hostedUrl } : null;
 
     } catch (e) {
         console.warn(`Failed to store hosted image: ${e}`);

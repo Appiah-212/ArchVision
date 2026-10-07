@@ -16,8 +16,10 @@ interface DesignItem {
     id: string;
     name?: string | null;
     sourceImage: string;
+    sourceFile?: File | Blob | null;
     sourcePath?: string | null;
     renderedImage?: string | null;
+    renderedFile?: File | Blob | null;
     renderedPath?: string | null;
     publicPath?: string | null;
     timestamp: number;
