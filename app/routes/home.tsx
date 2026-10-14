@@ -68,8 +68,8 @@ export default function Home() {
       
       setProjects(items)
     }
-    fetchProjects();
-  })
+    void fetchProjects();
+  }, []);
   return (
     <div className="home">
       <Navbar />
@@ -127,9 +127,8 @@ export default function Home() {
           </div>
 
           <div className="projects-grid">
-              {projects.map(({id, name, renderedImage, sourceImage, 
-              timestamp})=> (
-                <div className="project-card group" onClick={() => navigate(`visualizer/${id}`)}>
+              {projects.map(({id, name, renderedImage, sourceImage, timestamp, isPublic, sharedBy})=> (
+                <div key={id} className="project-card group" onClick={() => navigate(`visualizer/${id}`)}>
               <div className="preview">
                 <img
                 src={renderedImage || sourceImage}
@@ -137,7 +136,7 @@ export default function Home() {
                 />
 
                 <div className="badge">
-                  <span>Community</span>
+                  <span>{isPublic ? "Community" : "Private"}</span>
                 </div>
               </div>
 
@@ -147,7 +146,7 @@ export default function Home() {
                   <div className="meta">
                     <Clock size={12}/>
                     <span>{new Date(timestamp).toLocaleDateString()}</span>
-                    <span>By Kubiman</span>
+                    <span>{isPublic ? `By ${sharedBy || "Unknown user"}` : "By You"}</span>
                   </div>
                 </div>
 

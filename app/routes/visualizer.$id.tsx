@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useOutletContext, useParams } from "react-router"
 import { generate3DView } from "../../lib/ai.action";
-import { Box, Download, RefreshCcw, Share2, X } from "lucide-react";
+import { Box, Copy, Download, RefreshCcw, Share2, X } from "lucide-react";
 import Button from "../../components/ui/button";
-import { createProject, getProjectById } from "../../lib/puter.action";
+import { createProject, getProjectById, shareProject, unshareProject } from "../../lib/puter.action";
 import { ReactCompareSlider, ReactCompareSliderImage } from "react-compare-slider";
 
 const VisualizerId = () => {
@@ -19,7 +19,11 @@ const VisualizerId = () => {
     const [isProjectLoading, setIsProjectLoading] = useState(true);
 
     const [isProcessing, setIsProcessing] = useState(false);
+    const [isSharing, setIsSharing] = useState(false);
+    const [sharingMessage, setSharingMessage] = useState("");
+    const [shareUrl, setShareUrl] = useState("");
     const [currentImage, setCurrentImage] = useState<string | null>(null);
+    const canUnshareProject = project?.isPublic && project.ownerId === userId;
 
     const handleBack = () =>navigate('/');
 
@@ -61,6 +65,45 @@ const VisualizerId = () => {
         }
     };
 
+    const handleToggleShare = async () => {
+        if (!id || !project || isSharing) return;
+
+        setIsSharing(true);
+        setSharingMessage("");
+
+        try {
+            const updatedProject = project.isPublic
+                ? await unshareProject(id)
+                : await shareProject(id);
+            setProject(updatedProject);
+            setShareUrl(updatedProject.isPublic
+                ? new URL(`/visualizer/${encodeURIComponent(id)}`, window.location.origin).toString()
+                : "");
+            setSharingMessage(updatedProject.isPublic
+                ? "Project is now public."
+                : "Project is now private.");
+        } catch (error) {
+            console.error("Failed to update project sharing:", error);
+            setSharingMessage(error instanceof Error
+                ? error.message
+                : "Unable to update project sharing.");
+        } finally {
+            setIsSharing(false);
+        }
+    };
+
+    const handleCopyShareLink = async () => {
+        if (!shareUrl) return;
+
+        try {
+            await navigator.clipboard.writeText(shareUrl);
+            setSharingMessage("Share link copied to clipboard.");
+        } catch (error) {
+            console.error("Failed to copy project share link:", error);
+            setSharingMessage("Unable to copy the share link. Please copy it from the address bar.");
+        }
+    };
+
     const runGeneration = async (item: DesignItem) => {
         if(!id || !item.sourceImage) return;
 
@@ -80,7 +123,10 @@ const VisualizerId = () => {
                     isPublic: item.isPublic ?? false,
                 }
 
-                const saved = await createProject({ item: updatedItem, visibility: "private"})
+                const saved = await createProject({
+                    item: updatedItem,
+                    visibility: item.isPublic ? "public" : "private",
+                })
 
                 if (saved) {
                     setProject(saved);
@@ -111,6 +157,9 @@ const VisualizerId = () => {
 
       setProject(fetchedProject);
       setCurrentImage(fetchedProject?.renderedImage || null);
+      setShareUrl(fetchedProject?.isPublic
+        ? new URL(`/visualizer/${encodeURIComponent(id)}`, window.location.origin).toString()
+        : "");
       setIsProjectLoading(false);
       hasInitialGenerated.current = false;
     };
@@ -162,7 +211,11 @@ const VisualizerId = () => {
                         <div className="panel-meta">
                             <p>Project</p>
                             <h2>{project?.name || `Residence ${id}`}</h2>
-                            <p className="note">Created by You</p>
+                            <p className="note">
+                                {project?.isPublic
+                                    ? `Shared by ${project.sharedBy || "Unknown user"}`
+                                    : "Created by You"}
+                            </p>
 
                         </div>
 
@@ -176,12 +229,37 @@ const VisualizerId = () => {
                                 <Download className="w-4 h-4 mr-2" /> Export
                             </Button>
 
-                            <Button size="sm" onClick={() => {}} className="share">
-                                <Share2 className="w-4 h-4 mr-2" /> Share
+                            <Button
+                                size="sm"
+                                onClick={handleToggleShare}
+                                className="share"
+                                disabled={
+                                    !project ||
+                                    !currentImage ||
+                                    isProjectLoading ||
+                                    isProcessing ||
+                                    isSharing ||
+                                    (project.isPublic && !canUnshareProject)
+                                }
+                            >
+                                <Share2 className="w-4 h-4 mr-2" />
+                                {isSharing
+                                    ? "Updating..."
+                                    : project?.isPublic
+                                        ? canUnshareProject ? "Unshare" : "Shared"
+                                        : "Share"}
 
                             </Button>
 
                         </div>
+                        {sharingMessage && (
+                            <p role="status" className="note">{sharingMessage}</p>
+                        )}
+                        {project?.isPublic && canUnshareProject && shareUrl && (
+                            <Button size="sm" variant="outline" onClick={handleCopyShareLink}>
+                                <Copy className="w-4 h-4 mr-2" /> Copy share link
+                            </Button>
+                        )}
                     </div>
 
                     <div className={`render-area ${isProcessing ? 'is-processing' : 
