@@ -18,6 +18,19 @@ describe('Floor-plan file validation', () => {
     expect(result.error).toBeNull();
   });
 
+  it('accepts a valid WebP floor plan', () => {
+    const file = new File(
+      ['floor-plan'],
+      'house-plan.webp',
+      { type: 'image/webp' },
+    );
+
+    const result = validateFloorPlanFile(file);
+
+    expect(result.valid).toBe(true);
+    expect(result.error).toBeNull();
+  });
+
   it('rejects an unsupported file type', () => {
     const file = new File(
       ['not-an-image'],
@@ -29,7 +42,7 @@ describe('Floor-plan file validation', () => {
 
     expect(result.valid).toBe(false);
     expect(result.error).toBe(
-      'Only JPG and PNG floor plans are supported.',
+      'Only JPG, PNG, and WebP floor plans are supported.',
     );
   });
 

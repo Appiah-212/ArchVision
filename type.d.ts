@@ -109,7 +109,7 @@ type ShareAction = "share" | "unshare";
 type ShareStatus = "idle" | "saving" | "done";
 
 type HostingConfig = { subdomain: string };
-type HostedAsset = { url: string };
+type HostedAsset = { url: string; path: string };
 
 interface StoreHostedImageParams {
     hosting: HostingConfig | null;

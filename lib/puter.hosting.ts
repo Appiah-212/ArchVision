@@ -1,8 +1,11 @@
 import puter from "@heyputer/puter.js";
-import { createHostingSlug, fetchBlobFromUrl, getHostedUrl, getImageExtension, HOSTING_CONFIG_KEY, imageUrlToPngBlob, isHostedUrl } from "./utils";
+import { createHostingSlug, fetchBlobFromUrl, getHostedUrl, getImageExtension, HOSTING_CONFIG_KEY, imageUrlToPngBlob } from "./utils";
 
 type HostingConfig = { subdomain: string; };
-type HostedAsset = { url: string };
+type HostedAsset = { url: string; path: string };
+
+const getProjectDirectory = (projectId: string) =>
+    `projects/${encodeURIComponent(projectId).replace(/\./g, "%2E")}`;
 
 export const getOrCreateHostingConfig = async (): Promise<HostingConfig | null> => {
     const existing = (await puter.kv.get(HOSTING_CONFIG_KEY)) as HostingConfig | null;
@@ -12,11 +15,13 @@ export const getOrCreateHostingConfig = async (): Promise<HostingConfig | null> 
 
     try {
         const created = await puter.hosting.create(subdomain, '.');
+        const config = { subdomain: created.subdomain };
 
-         return  { subdomain: created.subdomain};       
+        await puter.kv.set(HOSTING_CONFIG_KEY, config);
+        return config;
 
     } catch (e) {
-        console.warn(`Could not find subdomain: ${e}`);
+        console.warn(`Could not create or save hosting configuration: ${e}`);
         return null;
     }
 }
@@ -32,7 +37,7 @@ const writeBlobToHosting = async ({ hosting, blob, projectId, label, sourceUrl }
 
     const contentType = blob.type || "";
     const ext = getImageExtension(contentType, sourceUrl || "");
-    const dir = `projects/${projectId}`;
+    const dir = getProjectDirectory(projectId);
     const filePath = `${dir}/${label}.${ext}`;
     const uploadFile = new File([blob], `${label}.${ext}`, { type: contentType });
 
@@ -40,7 +45,7 @@ const writeBlobToHosting = async ({ hosting, blob, projectId, label, sourceUrl }
     await puter.fs.write(filePath, uploadFile);
 
     const hostedUrl = getHostedUrl({ subdomain: hosting.subdomain }, filePath);
-    return hostedUrl ? { url: hostedUrl } : null;
+    return hostedUrl ? { url: hostedUrl, path: filePath } : null;
 };
 
 export const uploadFileToHosting = async ({ hosting, file, projectId, label}: {
@@ -63,7 +68,6 @@ export const uploadFileToHosting = async ({ hosting, file, projectId, label}: {
 export const uploadImageToHosting = async ({ hosting, url, projectId, label}: StoreHostedImageParams): Promise<HostedAsset | null> => {
 
     if(!hosting || !url) return null;
-    if(isHostedUrl(url)) return { url };
 
     try {
         const resolved = label === "rendered"
@@ -88,3 +92,6 @@ export const uploadImageToHosting = async ({ hosting, url, projectId, label}: St
 
 }
 
+export const deleteHostedAsset = async (asset: HostedAsset): Promise<void> => {
+    await puter.fs.delete(asset.path);
+};

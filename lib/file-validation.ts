@@ -1,8 +1,8 @@
 export const MAX_FLOOR_PLAN_SIZE = 50 * 1024 * 1024;
 
-const ALLOWED_TYPES = ['image/png', 'image/jpeg'];
+const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
-const ALLOWED_EXTENSIONS = /\.(png|jpe?g)$/i;
+const ALLOWED_EXTENSIONS = /\.(png|jpe?g|webp)$/i;
 
 export type FileValidationResult =
   | { valid: true; error: null }
@@ -24,7 +24,7 @@ export const validateFloorPlanFile = (
   ) {
     return {
       valid: false,
-      error: 'Only JPG and PNG floor plans are supported.',
+      error: 'Only JPG, PNG, and WebP floor plans are supported.',
     };
   }
 

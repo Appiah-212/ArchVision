@@ -122,7 +122,7 @@ it('rejects unsupported file types', () => {
 
   expect(
     screen.getByText(
-      'Only JPG and PNG floor plans are supported.',
+      'Only JPG, PNG, and WebP floor plans are supported.',
     ),
   ).toBeInTheDocument();
 });

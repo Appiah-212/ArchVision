@@ -3,7 +3,7 @@ import { useLocation, useNavigate, useOutletContext, useParams } from "react-rou
 import { generate3DView } from "../../lib/ai.action";
 import { Box, Copy, Download, RefreshCcw, Share2, X } from "lucide-react";
 import Button from "../../components/ui/button";
-import { createProject, getProjectById, shareProject, unshareProject } from "../../lib/puter.action";
+import { authorizeProjectGeneration, createProject, getProjectById, shareProject, unshareProject } from "../../lib/puter.action";
 import { ReactCompareSlider, ReactCompareSliderImage } from "react-compare-slider";
 
 const VisualizerId = () => {
@@ -19,10 +19,14 @@ const VisualizerId = () => {
     const [isProjectLoading, setIsProjectLoading] = useState(true);
 
     const [isProcessing, setIsProcessing] = useState(false);
+    const [generationError, setGenerationError] = useState<string | null>(null);
     const [isSharing, setIsSharing] = useState(false);
     const [sharingMessage, setSharingMessage] = useState("");
     const [shareUrl, setShareUrl] = useState("");
     const [currentImage, setCurrentImage] = useState<string | null>(null);
+    const canGenerateProject = Boolean(
+        project?.ownerId && userId && project.ownerId === userId,
+    );
     const canUnshareProject = project?.isPublic && project.ownerId === userId;
 
     const handleBack = () =>navigate('/');
@@ -105,36 +109,47 @@ const VisualizerId = () => {
     };
 
     const runGeneration = async (item: DesignItem) => {
-        if(!id || !item.sourceImage) return;
+        if (!id || !item.sourceImage) {
+            setGenerationError("The project source image is unavailable.");
+            return;
+        }
+        if (!userId || item.ownerId !== userId) {
+            setGenerationError("Only the project owner can generate a render.");
+            return;
+        }
 
         try {
             setIsProcessing(true);
+            setGenerationError(null);
+            await authorizeProjectGeneration(id);
             const result = await generate3DView({ sourceImage: item.sourceImage });
-
-            if(result.renderedImage) {
-                setCurrentImage(result.renderedImage);
-
-                const updatedItem = {
-                    ...item,
-                    renderedImage: result.renderedImage,
-                    renderedPath: result.renderedPath,
-                    timestamp: Date.now(),
-                    ownerId: item.ownerId ?? userId ?? null,
-                    isPublic: item.isPublic ?? false,
-                }
-
-                const saved = await createProject({
-                    item: updatedItem,
-                    visibility: item.isPublic ? "public" : "private",
-                })
-
-                if (saved) {
-                    setProject(saved);
-                    setCurrentImage(saved.renderedImage || result.renderedImage);
-                }
+            if (!result.renderedImage) {
+                throw new Error("The AI service returned no render. Please try again.");
             }
+
+            const updatedItem = {
+                ...item,
+                renderedImage: result.renderedImage,
+                renderedPath: result.renderedPath,
+                timestamp: Date.now(),
+                ownerId: item.ownerId,
+                isPublic: item.isPublic ?? false,
+            };
+            const saved = await createProject({
+                item: updatedItem,
+                visibility: item.isPublic ? "public" : "private",
+            });
+            if (!saved) throw new Error("The render was generated but could not be saved.");
+
+            setProject(saved);
+            setCurrentImage(saved.renderedImage || result.renderedImage);
         } catch (error) {
-            console.error('Generation failed: ', error)
+            console.error("AI generation failed:", error);
+            setGenerationError(
+                error instanceof Error
+                    ? error.message
+                    : "AI generation failed. Please try again.",
+            );
         } finally {
             setIsProcessing(false);
         }
@@ -157,6 +172,7 @@ const VisualizerId = () => {
 
       setProject(fetchedProject);
       setCurrentImage(fetchedProject?.renderedImage || null);
+      setGenerationError(null);
       setShareUrl(fetchedProject?.isPublic
         ? new URL(`/visualizer/${encodeURIComponent(id)}`, window.location.origin).toString()
         : "");
@@ -175,7 +191,8 @@ const VisualizerId = () => {
     if (
       isProjectLoading ||
       hasInitialGenerated.current ||
-      !project?.sourceImage
+      !project?.sourceImage ||
+      !canGenerateProject
     )
       return;
 
@@ -187,7 +204,7 @@ const VisualizerId = () => {
 
     hasInitialGenerated.current = true;
     void runGeneration(project);
-  }, [project, isProjectLoading]);
+  }, [project, isProjectLoading, canGenerateProject]);
     return (
                     
         <div className="visualizer">
@@ -272,7 +289,6 @@ const VisualizerId = () => {
                                     <img src={project?.sourceImage} alt="Original"
                                     className="render-fallback" />
                                 )}
-
                             </div>
                         )}
 
@@ -288,6 +304,25 @@ const VisualizerId = () => {
                         )}
 
                     </div>
+                    {project && !project.renderedImage && !canGenerateProject && (
+                        <p role="status" className="note">
+                            Sign in as the project owner to generate a render.
+                        </p>
+                    )}
+                    {generationError && (
+                        <div className="panel-actions">
+                            <p role="alert" className="note">{generationError}</p>
+                            {project && canGenerateProject && (
+                                <Button
+                                    size="sm"
+                                    onClick={() => void runGeneration(project)}
+                                    disabled={isProcessing}
+                                >
+                                    Retry generation
+                                </Button>
+                            )}
+                        </div>
+                    )}
 
                 </div>
 
@@ -305,7 +340,7 @@ const VisualizerId = () => {
                         {project?.sourceImage && currentImage ? (
                             <ReactCompareSlider
                                 defaultValue={50}
-                                style={{ width: '100%', height: 'autho' }}
+                                style={{ width: '100%', height: 'auto' }}
                                 itemOne={
                                     <ReactCompareSliderImage src={project?.sourceImage} alt="before"
                                     className="compare-img" />
