@@ -4,6 +4,7 @@ import { generate3DView } from "../../lib/ai.action";
 import { Box, Download, RefreshCcw, Share2, X } from "lucide-react";
 import Button from "../../components/ui/button";
 import { createProject, getProjectById } from "../../lib/puter.action";
+import { ReactCompareSlider, ReactCompareSliderImage } from "react-compare-slider";
 
 const VisualizerId = () => {
     const { id } = useParams();
@@ -21,6 +22,44 @@ const VisualizerId = () => {
     const [currentImage, setCurrentImage] = useState<string | null>(null);
 
     const handleBack = () =>navigate('/');
+
+    const handleExport = async () => {
+        if (!currentImage) return;
+
+        let downloadUrl: string | null = null;
+
+        try {
+            const response = await fetch(currentImage);
+            if (!response.ok) {
+                throw new Error(`Image download failed: ${response.status} ${response.statusText}`);
+            }
+
+            const image = await response.blob();
+            const extension = image.type === 'image/jpeg'
+                ? 'jpg'
+                : image.type === 'image/webp'
+                    ? 'webp'
+                    : 'png';
+            const projectName = project?.name || `Residence ${id || 'render'}`;
+            const safeName = projectName.replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').trim();
+            const link = document.createElement('a');
+
+            downloadUrl = URL.createObjectURL(image);
+            link.href = downloadUrl;
+            link.download = `${safeName || 'ArchVision'}-render.${extension}`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            const objectUrl = downloadUrl;
+            window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+            downloadUrl = null;
+        } catch (error) {
+            console.error('Failed to export rendered image:', error);
+            window.alert('Unable to download the rendered image. Please try again.');
+        } finally {
+            if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+        }
+    };
 
     const runGeneration = async (item: DesignItem) => {
         if(!id || !item.sourceImage) return;
@@ -118,6 +157,7 @@ const VisualizerId = () => {
 
             <section className="content">
                 <div className="panel">
+
                     <div className="panel-header">
                         <div className="panel-meta">
                             <p>Project</p>
@@ -129,7 +169,7 @@ const VisualizerId = () => {
                         <div className="panel-actions">
                             <Button
                                 size="sm"
-                                onClick={() => {}}
+                                onClick={handleExport}
                                 className="export"
                                 disabled={!currentImage}
                             >
@@ -165,6 +205,43 @@ const VisualizerId = () => {
                                     <span className="title">Rendering...</span>
                                     <span className="subtitle">Generating your 3D visualization</span>
                                 </div>
+
+                            </div>
+                        )}
+
+                    </div>
+
+                </div>
+
+                <div className="panel compare">
+                    <div className="panel-header">
+                        <div className="panel-meta">
+                            <p>Comparison</p>
+                            <h3>Before and After</h3>
+
+                        </div>
+                        <div className="hint">Drag to compare</div>
+                    </div>
+
+                    <div className="compare-stage">
+                        {project?.sourceImage && currentImage ? (
+                            <ReactCompareSlider
+                                defaultValue={50}
+                                style={{ width: '100%', height: 'autho' }}
+                                itemOne={
+                                    <ReactCompareSliderImage src={project?.sourceImage} alt="before"
+                                    className="compare-img" />
+                                }
+                                 itemTwo={
+                                    <ReactCompareSliderImage src={currentImage} alt="after"
+                                    className="compare-img" />
+                                }
+                            />
+                        ) : (
+                            <div className="compare-fallback">
+                                {project?.sourceImage && (
+                                    <img src={project.sourceImage} alt="Before" className="compare-img" />
+                                )}
 
                             </div>
                         )}
