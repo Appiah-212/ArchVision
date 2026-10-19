@@ -121,11 +121,32 @@ const VisualizerId = () => {
         try {
             setIsProcessing(true);
             setGenerationError(null);
+            
             await authorizeProjectGeneration(id);
-            const result = await generate3DView({ sourceImage: item.sourceImage });
+
+            const aiStartTime = performance.now();
+            let aiStatus = "FAILED";
+            let result: Awaited<ReturnType<typeof generate3DView>>;
+
+            try {
+            result = await generate3DView({
+                sourceImage: item.sourceImage
+            });
+
             if (!result.renderedImage) {
-                throw new Error("The AI service returned no render. Please try again.");
+                throw new Error(
+                "The AI service returned no render. Please try again."
+                );
             }
+
+            aiStatus = "SUCCESS";
+            } finally {
+            const aiDurationMs = performance.now() - aiStartTime;
+
+            console.info(
+                `[ARCHVISION_METRIC] AI generation: ${aiDurationMs.toFixed(2)} ms | Status: ${aiStatus}`
+            );
+        }
 
             const updatedItem = {
                 ...item,

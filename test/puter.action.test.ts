@@ -2,12 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   exec,
+  getUser,
   getOrCreateHostingConfig,
   uploadFileToHosting,
   uploadImageToHosting,
   deleteHostedAsset,
 } = vi.hoisted(() => ({
   exec: vi.fn(),
+  getUser: vi.fn(),
   getOrCreateHostingConfig: vi.fn(),
   uploadFileToHosting: vi.fn(),
   uploadImageToHosting: vi.fn(),
@@ -17,6 +19,7 @@ const {
 vi.mock('@heyputer/puter.js', () => ({
   default: {
     workers: { exec },
+    auth: { getUser },
   },
 }));
 
@@ -32,6 +35,7 @@ import { authorizeProjectGeneration, createProject, getProjectById } from '../li
 describe('public project retrieval', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getUser.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -59,18 +63,15 @@ describe('public project retrieval', () => {
     expect(exec).not.toHaveBeenCalled();
   });
 
-  it('falls back to authenticated retrieval when the project is not public', async () => {
+  it('retrieves a private project through authenticated worker execution without an anonymous 404', async () => {
     const project = {
       id: 'private-project',
       sourceImage: 'https://example.com/source.png',
       isPublic: false,
     };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ error: 'Authentication failed' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    ));
+    getUser.mockResolvedValue({ uuid: 'owner-1' });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
     exec.mockResolvedValue(
       new Response(JSON.stringify({ project }), {
         status: 200,
@@ -81,27 +82,25 @@ describe('public project retrieval', () => {
     const result = await getProjectById({ id: project.id });
 
     expect(result).toEqual(project);
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(exec).toHaveBeenCalledOnce();
   });
 
-  it('falls back to authenticated retrieval if anonymous fetching fails', async () => {
-    const project = {
-      id: 'private-project',
-      sourceImage: 'https://example.com/source.png',
-      isPublic: false,
-    };
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network failure')));
-    exec.mockResolvedValue(
-      new Response(JSON.stringify({ project }), {
-        status: 200,
+  it('returns no project for an anonymous private-project 404 without retrying the worker', async () => {
+    const projectId = 'private-project';
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'Project not found' }), {
+        status: 404,
         headers: { 'Content-Type': 'application/json' },
       }),
     );
+    vi.stubGlobal('fetch', fetchMock);
 
-    const result = await getProjectById({ id: project.id });
+    const result = await getProjectById({ id: projectId });
 
-    expect(result).toEqual(project);
-    expect(exec).toHaveBeenCalledOnce();
+    expect(result).toBeNull();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(exec).not.toHaveBeenCalled();
   });
 
   it('stores private project images through the Worker and resolves them through its authenticated route', async () => {
@@ -150,16 +149,16 @@ describe('public project retrieval', () => {
   it('sends generation authorization to the Worker and returns the quota', async () => {
     exec.mockResolvedValue(new Response(JSON.stringify({
       authorized: true,
-      limit: 10,
-      remaining: 9,
+      limit: 20,
+      remaining: 19,
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     }));
 
     await expect(authorizeProjectGeneration('plan-1')).resolves.toEqual({
-      limit: 10,
-      remaining: 9,
+      limit: 20,
+      remaining: 19,
     });
     expect(exec).toHaveBeenCalledWith(
       expect.stringContaining('/api/projects/generation/authorize'),

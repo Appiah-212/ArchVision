@@ -44,6 +44,7 @@ runInNewContext(workerSource, {
 });
 
 const privateAssetHandler = handlers.get('GET /api/projects/private-asset')!;
+const privateAssetUploadHandler = handlers.get('POST /api/projects/private-asset')!;
 const projectHandler = handlers.get('GET /api/projects/get')!;
 const saveHandler = handlers.get('POST /api/projects/save')!;
 const generationHandler = handlers.get('POST /api/projects/generation/authorize')!;
@@ -71,6 +72,52 @@ describe('Worker private project image access', () => {
 
     expect(response.status).toBe(401);
     expect(workerFs.read).not.toHaveBeenCalled();
+  });
+
+  it('uses the stored image extension when the filesystem returns a generic MIME type', async () => {
+    const project = {
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+      isPublic: false,
+    };
+    const owner = createUserPuter('owner-1');
+    owner.kv.get.mockResolvedValue(project);
+    workerFs.read.mockResolvedValue(new Blob(['floor plan'], { type: 'application/octet-stream' }));
+
+    const response = await privateAssetHandler({
+      request: new Request('https://worker.example/api/projects/private-asset?id=plan-1&label=source'),
+      user: { puter: owner },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toBe('image/png');
+  });
+
+  it('accepts supported image MIME types when uploading private images', async () => {
+    const owner = createUserPuter('owner-1');
+    const formData = new FormData();
+    formData.set('id', 'plan-1');
+    formData.set('label', 'source');
+    formData.set(
+      'file',
+      new File(['floor plan'], 'source.png', { type: 'image/png' }),
+    );
+    const request = new Request('https://worker.example/api/projects/private-asset', {
+      method: 'POST',
+    });
+    vi.spyOn(request, 'formData').mockResolvedValue(formData);
+
+    const response = await privateAssetUploadHandler({
+      request,
+      user: { puter: owner },
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      asset: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+    });
+    expect(workerFs.write).toHaveBeenCalledOnce();
   });
 
   it('rejects public image URLs when saving a private project', async () => {
@@ -258,8 +305,8 @@ describe('Worker private project image access', () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       authorized: true,
-      limit: 10,
-      remaining: 9,
+      limit: 20,
+      remaining: 19,
     });
     expect(workerKv.incr).toHaveBeenCalledWith(
       expect.stringMatching(/^archvision_ai_generation:owner-1:\d{4}-\d{2}-\d{2}$/),
@@ -314,7 +361,7 @@ describe('Worker private project image access', () => {
       ownerId: 'owner-1',
       sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
     });
-    workerKv.incr.mockResolvedValue(11);
+    workerKv.incr.mockResolvedValue(21);
 
     const response = await generationHandler({
       request: new Request('https://worker.example/api/projects/generation/authorize', {
@@ -327,7 +374,7 @@ describe('Worker private project image access', () => {
     expect(response.status).toBe(429);
     await expect(response.json()).resolves.toMatchObject({
       error: 'Daily AI generation limit reached. Try again after 00:00 UTC.',
-      limit: 10,
+      limit: 20,
     });
     expect(workerKv.incr).toHaveBeenNthCalledWith(
       2,
