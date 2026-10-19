@@ -274,27 +274,15 @@ export const getProjectById = async ({ id }: { id: string }) => {
 
     try {
         const url = `${PUTER_WORKER_URL}/api/projects/get?id=${encodeURIComponent(id)}`;
-        let publicResponse: Response | null = null;
-
-        try {
-            publicResponse = await fetch(url);
-            if (publicResponse.ok) {
-                const data = (await publicResponse.json()) as {
-                    project?: DesignItem | null;
-                };
-                if (data?.project) return data.project;
-            }
-        } catch (error) {
-            console.warn("Anonymous project fetch failed; retrying authenticated access:", error);
-        }
-
-        const response = await puter.workers.exec(
-            url,
-            { method: "GET" },
-        );
+        const user = await getCurrentUser();
+        const response = user
+            ? await puter.workers.exec(url, { method: "GET" })
+            : await fetch(url);
 
         if (!response.ok) {
-            console.error("Failed to fetch project:", await response.text());
+            if (response.status !== 404 || user) {
+                console.error("Failed to fetch project:", await response.text());
+            }
             return null;
         }
 
@@ -303,7 +291,9 @@ export const getProjectById = async ({ id }: { id: string }) => {
         };
 
         return data?.project
-            ? await resolvePrivateProjectAssets(data.project)
+            ? user
+                ? await resolvePrivateProjectAssets(data.project)
+                : data.project
             : null;
     } catch (error) {
         console.error("Failed to fetch project:", error);

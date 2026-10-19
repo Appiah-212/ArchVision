@@ -40,7 +40,19 @@ export default function Home() {
       timestamp: Date.now(),
     } satisfies DesignItem;
 
-    const saved = await createProject({ item: newItem, visibility: 'private'});
+
+const startTime = performance.now();
+
+const saved = await createProject({
+  item: newItem,
+  visibility: 'private'
+});
+
+const durationMs = performance.now() - startTime;
+
+console.info(
+  `[ARCHVISION_METRIC] Project creation: ${durationMs.toFixed(2)} ms | Status: ${saved ? 'SUCCESS' : 'FAILED'}`
+);
 
     if(!saved) {
         console.error("Failed to create project");
