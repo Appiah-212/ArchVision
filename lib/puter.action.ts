@@ -14,6 +14,7 @@ import {
 } from "./render-version";
 import type { AuthorizedGenerationContext, GenerationMode } from "./generation-types";
 import { validateFidelityEvaluation, type FidelityEvaluation } from "./fidelity-evaluation";
+import { repairResearchWorkspaceSnapshots, validateResearchWorkspace, type ResearchWorkspaceResponse } from "./research-evaluation";
 
 const PRIVATE_ASSET_PREFIX = "archvision_private_asset:";
 
@@ -139,9 +140,10 @@ const resolvePrivateProjectAssets = async (project: DesignItem): Promise<DesignI
     return {
         ...project,
         sourceImage: sourceResult.value || "",
-        ...(project.sourceImage?.startsWith(PRIVATE_ASSET_PREFIX)
-            ? { sourcePath: project.sourceImage }
-            : project.sourcePath ? { sourcePath: project.sourcePath } : {}),
+        // Keep the persisted reference separately from the resolved display URL.
+        // Fidelity records must use the exact source reference stored on the Worker
+        // project, even when an older project also has a stale sourcePath value.
+        sourcePath: project.sourceImage,
         renderedImage,
         ...(project.renderedImage?.startsWith(PRIVATE_ASSET_PREFIX)
             ? { renderedPath: project.renderedImage }
@@ -552,6 +554,50 @@ export const saveFidelityEvaluation = async (id: string, evaluation: FidelityEva
     const data = await response.json() as { evaluation?: unknown; error?: string };
     if (!response.ok) throw new Error(data.error || "Unable to save fidelity assessment");
     return validateFidelityEvaluation(data.evaluation);
+};
+
+export const getResearchWorkspace = async (): Promise<ResearchWorkspaceResponse> => {
+    if (!PUTER_WORKER_URL) throw new Error("Research evaluation is unavailable: Worker URL is not configured");
+    const response = await puter.workers.exec(`${PUTER_WORKER_URL}/api/research/workspace`, { method: "GET" });
+    const data = await response.json() as { workspace?: unknown; projects?: unknown; retrievalLatencyMs?: unknown; error?: string; message?: string };
+    if (!response.ok) throw new Error(`${data.error || "Unable to load research workspace"} (HTTP ${response.status})${data.message ? `: ${data.message}` : ""}`);
+    if (!Array.isArray(data.projects) || typeof data.retrievalLatencyMs !== "number" || !Number.isFinite(data.retrievalLatencyMs)) throw new Error("The Worker returned an invalid research workspace");
+    const projects = data.projects.map((value) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The Worker returned an invalid research project summary");
+        const summary = value as Record<string, unknown>;
+        if (typeof summary.id !== "string" || !summary.id.trim() || typeof summary.name !== "string" || !Array.isArray(summary.versions) || !Array.isArray(summary.evaluations) || !Array.isArray(summary.generationOutcomes)) throw new Error("The Worker returned an invalid research project summary");
+        const versions = summary.versions.map((version) => validateRenderVersion(version));
+        if (versions.some((version) => version.projectId !== summary.id)) throw new Error("Research render version references a different project");
+        const evaluations = summary.evaluations.map((evaluation) => validateFidelityEvaluation(evaluation));
+        if (evaluations.some((evaluation) => evaluation.projectId !== summary.id)) throw new Error("Research fidelity record references a different project");
+        const generationOutcomes = summary.generationOutcomes.map((outcome) => {
+            if (!outcome || typeof outcome !== "object" || Array.isArray(outcome)) throw new Error("Research generation outcome is invalid");
+            const item = outcome as Record<string, unknown>;
+            if ((item.mode !== "baseline" && item.mode !== "enhanced") || (item.status !== "complete" && item.status !== "failed") || typeof item.occurredAt !== "string" || !Number.isFinite(Date.parse(item.occurredAt)) || (item.latencyMs !== undefined && (!Number.isSafeInteger(item.latencyMs) || Number(item.latencyMs) < 0))) throw new Error("Research generation outcome is invalid");
+            return { mode: item.mode as "baseline" | "enhanced", status: item.status as "complete" | "failed", occurredAt: item.occurredAt as string, ...(item.latencyMs !== undefined ? { latencyMs: item.latencyMs as number } : {}) };
+        });
+        const warnings = Array.isArray(summary.warnings) && summary.warnings.every((item) => typeof item === "string") ? summary.warnings as string[] : [];
+        return { id: summary.id, name: summary.name, versions, evaluations, generationOutcomes, warnings };
+    });
+    const repaired = repairResearchWorkspaceSnapshots(data.workspace, projects);
+    const workspace = validateResearchWorkspace(repaired.workspace);
+    if (repaired.changed) {
+        try {
+            await saveResearchWorkspace(workspace);
+        } catch (error) {
+            console.warn("Could not persist repaired research render snapshots:", error);
+        }
+    }
+    return { workspace, projects, retrievalLatencyMs: data.retrievalLatencyMs };
+};
+
+export const saveResearchWorkspace = async (workspace: ResearchWorkspaceResponse["workspace"]) => {
+    if (!PUTER_WORKER_URL) throw new Error("Research evaluation is unavailable: Worker URL is not configured");
+    const validWorkspace = validateResearchWorkspace(workspace);
+    const response = await puter.workers.exec(`${PUTER_WORKER_URL}/api/research/workspace/save`, { method: "POST", body: JSON.stringify({ workspace: validWorkspace }) });
+    const data = await response.json() as { workspace?: unknown; error?: string };
+    if (!response.ok) throw new Error(data.error || "Unable to save research workspace");
+    return validateResearchWorkspace(data.workspace);
 };
 
 export const createProject = async ({ item, visibility="private" }: CreateProjectParams):

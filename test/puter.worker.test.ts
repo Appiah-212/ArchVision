@@ -158,6 +158,8 @@ const renderVersionUpdateHandler = handlers.get('POST /api/projects/render-versi
 const analysisAuthorizationHandler = handlers.get('POST /api/projects/floor-plan-analysis/authorize')!;
 const analysisSaveHandler = handlers.get('POST /api/projects/floor-plan-analysis/save')!;
 const renderConfigurationSaveHandler = handlers.get('POST /api/projects/render-configuration/save')!;
+const researchWorkspaceHandler = handlers.get('GET /api/research/workspace')!;
+const researchWorkspaceSaveHandler = handlers.get('POST /api/research/workspace/save')!;
 const fidelityEvaluationsHandler = handlers.get('GET /api/projects/fidelity-evaluations')!;
 const fidelityEvaluationSaveHandler = handlers.get('POST /api/projects/fidelity-evaluations/save')!;
 const shareHandler = handlers.get('POST /api/projects/share')!;
@@ -198,7 +200,7 @@ const renderConfiguration = {
 const createUserPuter = (uuid: string) => ({
   auth: { getUser: vi.fn().mockResolvedValue({ uuid }) },
   fs: { delete: vi.fn() },
-  kv: { del: vi.fn(), get: vi.fn(), set: vi.fn() },
+  kv: { del: vi.fn(), get: vi.fn(), set: vi.fn(), list: vi.fn().mockResolvedValue([]) },
 });
 
 describe('private fidelity assessment persistence', () => {
@@ -263,6 +265,89 @@ describe('private fidelity assessment persistence', () => {
     const response = await projectHandler({ request: new Request('https://worker.example/api/projects/get?id=plan-1') });
     const body = await response.json() as { project?: Record<string, unknown> };
     expect(body.project).not.toHaveProperty('fidelityEvaluations');
+  });
+});
+
+describe('private research workspace authorization and persistence', () => {
+  const ownerProject = {
+    id: 'plan-research', ownerId: 'owner-1', name: 'Private house',
+    sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+    renderVersions: [], fidelityEvaluations: [],
+  };
+  const registeredWorkspace = {
+    schemaVersion: 1,
+    datasets: [{ registrationId: 'registration-1', datasetIdentifier: 'pilot-1', anonymousPlanIdentifier: 'Plan-001', sourceProjectId: ownerProject.id, sourceCategory: 'Residential', complexity: 'MEDIUM', inclusionCriteria: ['Permission confirmed'], exclusionCriteria: [], permissionStatus: 'OWNER_CREATED', permissionNotes: '', status: 'APPROVED', createdAt: '2026-10-20T00:00:00.000Z', updatedAt: '2026-10-20T00:00:00.000Z' }],
+    experiments: [],
+  };
+
+  it('saves and reloads a private registry under the authenticated owner key', async () => {
+    const owner = createUserPuter('owner-1');
+    owner.kv.get.mockResolvedValue(undefined);
+    owner.kv.list.mockResolvedValue([{ key: 'archvision_project_owner-1_plan-research', value: ownerProject }]);
+    const saved = await researchWorkspaceSaveHandler({ request: new Request('https://worker.example/api/research/workspace/save', { method: 'POST', body: JSON.stringify({ workspace: registeredWorkspace }) }), user: { puter: owner } });
+    expect(saved.status).toBe(200);
+    expect(owner.kv.set).toHaveBeenCalledWith('archvision_research_workspace_owner-1', registeredWorkspace);
+    owner.kv.get.mockResolvedValue(registeredWorkspace);
+    const loaded = await researchWorkspaceHandler({ request: new Request('https://worker.example/api/research/workspace'), user: { puter: owner } });
+    expect(loaded.status).toBe(200);
+    await expect(loaded.json()).resolves.toMatchObject({ workspace: registeredWorkspace, projects: [{ id: ownerProject.id }] });
+  });
+
+  it('rejects unauthenticated, cross-owner, and unowned source registrations', async () => {
+    const unauthenticated = await researchWorkspaceHandler({ request: new Request('https://worker.example/api/research/workspace') });
+    expect(unauthenticated.status).toBe(401);
+    const stranger = createUserPuter('stranger');
+    stranger.kv.list.mockResolvedValue([{ key: 'archvision_project_owner-1_plan-research', value: ownerProject }]);
+    const response = await researchWorkspaceSaveHandler({ request: new Request('https://worker.example/api/research/workspace/save', { method: 'POST', body: JSON.stringify({ workspace: registeredWorkspace }) }), user: { puter: stranger } });
+    expect(response.status).toBe(400);
+    expect(stranger.kv.set).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed dataset records and does not change public project responses', async () => {
+    const owner = createUserPuter('owner-1'); owner.kv.list.mockResolvedValue([{ key: 'archvision_project_owner-1_plan-research', value: ownerProject }]);
+    const invalid = { ...registeredWorkspace, datasets: [{ ...registeredWorkspace.datasets[0], anonymousPlanIdentifier: '<script>' + 'x'.repeat(100) }] };
+    const response = await researchWorkspaceSaveHandler({ request: new Request('https://worker.example/api/research/workspace/save', { method: 'POST', body: JSON.stringify({ workspace: invalid }) }), user: { puter: owner } });
+    expect(response.status).toBe(400);
+    expect(owner.kv.set).not.toHaveBeenCalled();
+  });
+
+  it('keeps the workspace available when unrelated legacy render or assessment records are invalid', async () => {
+    const owner = createUserPuter('owner-1');
+    const project = {
+      ...ownerProject,
+      renderVersions: [{ id: 'broken-render', generationMode: 'baseline' }],
+      fidelityEvaluations: [{ id: 'broken-evaluation', renderVersionId: 'broken-render' }],
+    };
+    owner.kv.get.mockResolvedValue(undefined);
+    owner.kv.list.mockResolvedValue([{ key: `archvision_project_owner-1_${project.id}`, value: project }]);
+    const response = await researchWorkspaceHandler({ request: new Request('https://worker.example/api/research/workspace'), user: { puter: owner } });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      projects: [{ id: project.id, versions: [], evaluations: [], warnings: [
+        'A saved render was omitted because its history record could not be validated.',
+        'A saved fidelity assessment was omitted because its record could not be validated.',
+      ] }],
+    });
+  });
+
+  it('validates every paired legacy render against its exact project, mode, and registration', async () => {
+    const baseline = { id: 'legacy_aaa', projectId: ownerProject.id, versionNumber: 1, imageAssetReference: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174001.png', generationMode: 'baseline', modelIdentifier: 'legacy/unknown', promptTemplateVersion: 'legacy/unknown', configurationSnapshot: null, approvedAnalysisRevision: null, createdAt: '2026-10-20T00:00:00.000Z', generationStatus: 'complete' };
+    const enhanced = { ...baseline, id: 'legacy_bbb', versionNumber: 2, imageAssetReference: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174002.png', generationMode: 'enhanced' };
+    const project = { ...ownerProject, renderVersions: [baseline, enhanced] };
+    const owner = createUserPuter('owner-1'); owner.kv.get.mockResolvedValue(undefined);
+    owner.kv.list.mockResolvedValue([{ key: `archvision_project_owner-1_${project.id}`, value: project }]);
+    const registration = registeredWorkspace.datasets[0];
+    const generationSnapshot = (version: typeof baseline) => ({ renderVersionId: version.id, generationMode: version.generationMode, modelIdentifier: version.modelIdentifier, promptTemplateVersion: version.promptTemplateVersion, configurationSnapshot: null, approvedAnalysisRevision: null, generatedAt: version.createdAt, generationLatencyMs: null, generationStatus: 'complete' });
+    const experiment = { experimentId: 'experiment-1', experimentName: 'Pilot', researchQuestion: 'Compare paired modes', protocolVersion: 'archvision-pilot-v1', datasetIdentifier: 'pilot-1', sourceProjectIds: [project.id], baselineRenderVersionIds: [baseline.id], enhancedRenderVersionIds: [enhanced.id], evaluationRecordIds: [], evaluationRubricVersion: 'archvision-structural-fidelity-v1', generationModelIdentifiers: ['legacy/unknown'], promptTemplateVersions: ['legacy/unknown'], configurationSnapshots: [{ renderVersionId: baseline.id, snapshot: null }, { renderVersionId: enhanced.id, snapshot: null }], generationSnapshots: [generationSnapshot(baseline), generationSnapshot(enhanced)], analysisRevisionIdentifiers: [{ projectId: project.id, revision: null }], experimentalConditions: { controlledVariables: ['source plan'], uncontrolledVariables: [], notes: [] }, comparisons: [{ pairId: 'pair-1', registrationId: registration.registrationId, sourceProjectId: project.id, baselineRenderVersionId: baseline.id, enhancedRenderVersionId: enhanced.id, baselineEvaluationRecordId: null, enhancedEvaluationRecordId: null, baselinePresentedAsA: true, uncontrolledDifferences: [], limitations: [] }], blindReviewEnabled: true, createdAt: '2026-10-20T01:00:00.000Z', updatedAt: '2026-10-20T01:00:00.000Z', experimentStatus: 'IN_PROGRESS', notes: [], limitations: [] };
+    const workspace = { ...registeredWorkspace, experiments: [experiment] };
+    const response = await researchWorkspaceSaveHandler({ request: new Request('https://worker.example/api/research/workspace/save', { method: 'POST', body: JSON.stringify({ workspace }) }), user: { puter: owner } });
+    expect(response.status).toBe(200);
+    expect(owner.kv.set).toHaveBeenCalledWith('archvision_research_workspace_owner-1', workspace);
+
+    const wrongPair = { ...experiment, experimentId: 'experiment-2', sourceProjectIds: ['another-project'], comparisons: [{ ...experiment.comparisons[0], pairId: 'pair-2', sourceProjectId: 'another-project' }], analysisRevisionIdentifiers: [{ projectId: 'another-project', revision: null }] };
+    const invalidWorkspace = { ...registeredWorkspace, experiments: [wrongPair] };
+    const rejected = await researchWorkspaceSaveHandler({ request: new Request('https://worker.example/api/research/workspace/save', { method: 'POST', body: JSON.stringify({ workspace: invalidWorkspace }) }), user: { puter: owner } });
+    expect(rejected.status).toBe(400);
   });
 });
 

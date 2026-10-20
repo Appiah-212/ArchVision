@@ -225,3 +225,33 @@ Use the same source plan and rubric version for controlled baseline/enhanced com
 ---
 
 Built with ❤️ using React Router.
+
+## Phase 2.6 experimental evaluation and benchmarking
+
+Phase 2.6 implements private research dataset registration, append-only paired experiments, descriptive benchmarking, optional A/B-ordered qualitative review, and sanitized JSON/CSV export. The research question is whether enhanced floor-plan-aware generation produces higher human rubric-based structural fidelity than baseline generation on the same source plans. No experimental dataset or research result is bundled with the application. The directional hypothesis is protocol preparation, not a result. See [the experimental protocol](docs/phase-2.6-experimental-protocol.md) for dataset selection, conditions, review procedure, threats to validity, reproducibility checklist, and export data dictionary.
+
+### Data schema and association
+
+`lib/research-evaluation.ts` defines runtime-validated `DatasetRegistration`, `ResearchExperiment`, `PairedComparison`, `QualitativeReview`, and `ResearchWorkspace` records. A comparison references one registered anonymous plan, one exact baseline `RenderVersion`, one exact enhanced `RenderVersion`, optional version-specific fidelity evaluations, the randomized A/B display mapping, known uncontrolled differences, and limitations. Its experiment preserves protocol/rubric versions, model and prompt metadata, settings and approved-analysis revision snapshots, conditions, status, and notes. Image files and private floor-plan contents are not copied into research metadata.
+
+The authenticated Puter Worker stores workspace JSON at an owner-scoped key. It checks that registered source projects belong to the caller, both versions belong to the same project and have the expected generation mode, and each selected fidelity evaluation belongs to the matching version and rubric. Dataset records, experiment identities, and prior comparison core fields are retained; comparisons are append-only and a saved qualitative review cannot be overwritten. A baseline/enhanced selection is never inferred from the active render. Public project serialization does not include research workspace data, and sharing a render does not publish assessments.
+
+### Benchmark calculations
+
+The dashboard uses only validated stored records. Scores use the Phase 2.5 equal-weight rubric and exclude `CANNOT_DETERMINE`; zero applicable criteria is insufficient evidence and has no score. Coverage is applicable criteria / six. A paired difference is enhanced score minus baseline score and remains missing unless both evaluations have numeric scores. Criterion results are mean 0–2 points among assessable observations. The dashboard reports count, mean, median, minimum, maximum, sample standard deviation (only with two or more observations), missing observations, coverage, discrepancies, unassessable criteria, stored render-generation latency, retained generation outcomes, incomplete pairs, and current workspace retrieval latency. Coverage differences greater than one criterion are flagged.
+
+Results are descriptive only. Missing values are not converted to zero. Success rates include only retained project-history outcomes; historical failures may not be recoverable. Current retrieval latency is one workspace-load measurement, not a per-project performance benchmark. No statistical significance is calculated, and no superiority conclusion is generated.
+
+### Human workflow and dashboard
+
+Open **Research Evaluation** while signed in. Register an owner-created or permission-documented source plan using an anonymous plan identifier and record category, complexity, inclusion/exclusion criteria, and permission notes. For a pair, select the same source project, existing baseline and enhanced versions, and their optional existing fidelity assessments. Record uncontrolled conditions and limitations. The dashboard displays per-plan scores/coverage, paired differences, criterion summaries, discrepancy counts, generation latency/outcomes, and missing/incomplete evidence. Assessment details can be reopened; the selected render IDs keep history independent of the project's active version. No generation action is available on this page.
+
+The optional blind A/B panel hides baseline/enhanced labels in the review form and stores the randomized mapping. This is not a secure blinded study because mode metadata is available elsewhere in the owner interface. Qualitative comments and reviewer codes remain human-provided. The data structure can retain distinct reviewer identifiers for future inter-reviewer agreement analysis; agreement statistics are not part of Phase 2.6.
+
+### Export and protection
+
+Use **Export JSON** or **Export CSV** for the selected experiment. Exports include experiment/protocol/rubric identifiers, anonymous plan identifiers, exact render/evaluation IDs, generation mode/model/prompt/configuration/revision metadata, per-criterion ratings and comments, fidelity score/coverage, generation latency/status, paired difference, limitations, and missing-evidence flags. The export data dictionary is included in JSON and documented in the protocol. Raw project IDs/names, owner identifiers, private image references, and approved analysis snapshots are excluded. Reviewer notes can still be sensitive research data. Export files are downloaded locally by the browser and are not automatically published.
+
+### Research limitations
+
+The output is a conceptual image, not verified CAD/BIM geometry. Human assessment is subjective and affected by perspective, occlusion, and reviewer interpretation. The approved analysis is reference information, not ground truth. Generation runs can differ in prompt, settings, time, stochastic output, and other conditions. Small convenience samples limit generalization. Score coverage and all missing/unassessable observations must accompany score reporting. No experiments, observations, accuracy percentages, significance tests, or outcomes are fabricated. Phase 2.7 is outside this milestone.

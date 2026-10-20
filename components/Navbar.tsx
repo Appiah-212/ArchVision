@@ -34,10 +34,8 @@ const Navbar = () => {
           </div>
 
           <div className="links" aria-label="Main navigation">
-            <a href="#">Product</a>
-            <a href="#">Pricing</a>
-            <a href="#">Community</a>
-            <a href="#">Enterprise</a>
+            <a href="/">Projects</a>
+            <a href="/research">Research Evaluation</a>
           </div>
         </div>
 
