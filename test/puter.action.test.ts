@@ -30,7 +30,33 @@ vi.mock('../lib/puter.hosting', () => ({
   uploadImageToHosting,
 }));
 
-import { authorizeProjectGeneration, createProject, getProjectById } from '../lib/puter.action';
+import {
+  authorizeFloorPlanAnalysis,
+  authorizeProjectGeneration,
+  createProject,
+  getProjectById,
+  saveFloorPlanAnalysis,
+} from '../lib/puter.action';
+import type { FloorPlanAnalysis } from '../lib/floor-plan-analysis';
+
+const approvedAnalysis: FloorPlanAnalysis = {
+  schemaVersion: 1,
+  model: 'gemini-2.5-flash',
+  analyzedAt: '2026-10-19T12:00:00.000Z',
+  summary: 'One enclosed room is visible.',
+  rooms: [{
+    id: 'room-1',
+    label: 'Room 1',
+    possibleFunction: null,
+    confidence: 0.62,
+    evidence: 'A rectangular enclosure is visible.',
+  }],
+  doors: [],
+  windows: [],
+  walls: [],
+  relationships: [],
+  uncertainties: ['The room function is not identifiable.'],
+};
 
 describe('public project retrieval', () => {
   beforeEach(() => {
@@ -84,6 +110,45 @@ describe('public project retrieval', () => {
     expect(result).toEqual(project);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(exec).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a private source image available when the private render asset is missing', async () => {
+    getUser.mockResolvedValue({ uuid: 'owner-1' });
+    const sourceAsset = 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png';
+    const renderedAsset = 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174001.png';
+    exec.mockImplementation(async (url: string) => {
+      if (url.includes('/api/projects/get?')) {
+        return new Response(JSON.stringify({
+          project: {
+            id: 'private-project',
+            ownerId: 'owner-1',
+            isPublic: false,
+            sourceImage: sourceAsset,
+            renderedImage: renderedAsset,
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('label=source')) {
+        return new Response(new Blob(['source'], { type: 'image/png' }), { status: 200 });
+      }
+      if (url.includes('label=rendered')) {
+        return new Response(JSON.stringify({
+          error: 'Failed to retrieve private image',
+          message: 'Object not found',
+        }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new Error(`Unexpected Worker request: ${url}`);
+    });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const result = await getProjectById({ id: 'private-project' });
+
+    expect(result?.sourceImage).toMatch(/^blob:/);
+    expect(result?.renderedImage).toBeNull();
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('using its source image'),
+      expect.any(Error),
+    );
   });
 
   it('returns no project for an anonymous private-project 404 without retrying the worker', async () => {
@@ -179,6 +244,47 @@ describe('public project retrieval', () => {
 
     await expect(authorizeProjectGeneration('plan-1')).rejects.toThrow(
       'Daily AI generation limit reached. Try again after 00:00 UTC.',
+    );
+  });
+
+  it('authorizes analysis and returns the current AI quota', async () => {
+    exec.mockResolvedValue(new Response(JSON.stringify({
+      authorized: true,
+      limit: 20,
+      remaining: 18,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await expect(authorizeFloorPlanAnalysis('plan-1')).resolves.toEqual({
+      limit: 20,
+      remaining: 18,
+    });
+    expect(exec).toHaveBeenCalledWith(
+      expect.stringContaining('/api/projects/floor-plan-analysis/authorize'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1' }),
+      }),
+    );
+  });
+
+  it('saves and validates an approved interpretation through the Worker', async () => {
+    exec.mockResolvedValue(new Response(JSON.stringify({ analysis: approvedAnalysis }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await expect(saveFloorPlanAnalysis('plan-1', approvedAnalysis)).resolves.toEqual(
+      approvedAnalysis,
+    );
+    expect(exec).toHaveBeenCalledWith(
+      expect.stringContaining('/api/projects/floor-plan-analysis/save'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1', analysis: approvedAnalysis }),
+      }),
     );
   });
 });

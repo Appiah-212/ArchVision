@@ -82,6 +82,14 @@ Make sure to deploy the output of `npm run build`
 
 This template comes with [Tailwind CSS](https://tailwindcss.com/) already configured for a simple default starting experience. You can use whatever CSS framework you prefer.
 
+## AI floor-plan analysis
+
+On a project page, the owner can explicitly request a multimodal interpretation of the uploaded floor plan. When requested, the image is sent to Puter AI (Gemini 2.5 Flash) for structured findings on rooms, possible room functions, doors, windows, walls, spatial relationships, evidence, confidence estimates, and uncertainties. The application validates this response before presenting it for review.
+
+Owners can edit the draft and must select **Approve and save** to persist it. The approved analysis is stored with the owner's private project record; it is not included in the public shared-project copy. Analysis requests use the existing daily AI usage quota. Existing projects without an analysis remain valid.
+
+This is an AI-assisted conceptual interpretation, not verified CAD/BIM geometry or a substitute for professional review. Findings may be uncertain or unidentifiable, and the interface exposes those uncertainties for review.
+
 ---
 
 Built with ❤️ using React Router.

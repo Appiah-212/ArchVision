@@ -2,6 +2,7 @@ import puter from "@heyputer/puter.js";
 import { deleteHostedAsset, getOrCreateHostingConfig, uploadFileToHosting, uploadImageToHosting } from "./puter.hosting";
 import { fetchBlobFromUrl, getImageExtension } from "./utils";
 import { PUTER_WORKER_URL } from "./constants";
+import { validateFloorPlanAnalysis, type FloorPlanAnalysis } from "./floor-plan-analysis";
 
 const PRIVATE_ASSET_PREFIX = "archvision_private_asset:";
 
@@ -75,11 +76,23 @@ const resolvePrivateAsset = async (
 };
 
 const resolvePrivateProjectAssets = async (project: DesignItem): Promise<DesignItem> => {
-    const [sourceImage, renderedImage] = await Promise.all([
+    const [sourceResult, renderedResult] = await Promise.allSettled([
         resolvePrivateAsset(project.sourceImage, project.id, "source"),
         resolvePrivateAsset(project.renderedImage, project.id, "rendered"),
     ]);
-    return { ...project, sourceImage: sourceImage || "", renderedImage };
+    if (sourceResult.status === "rejected") throw sourceResult.reason;
+
+    let renderedImage: string | null | undefined;
+    if (renderedResult.status === "fulfilled") {
+        renderedImage = renderedResult.value;
+    } else {
+        console.warn(
+            `Private rendered image is unavailable for project ${project.id}; using its source image.`,
+            renderedResult.reason,
+        );
+        renderedImage = null;
+    }
+    return { ...project, sourceImage: sourceResult.value || "", renderedImage };
 };
 
 export const signIn = async () => await puter.auth.signIn()
@@ -126,6 +139,62 @@ export const authorizeProjectGeneration = async (
         throw new Error("The Worker returned an invalid generation authorization");
     }
     return { limit: data.limit, remaining: data.remaining };
+};
+
+export const authorizeFloorPlanAnalysis = async (
+    id: string,
+): Promise<{ limit: number; remaining: number }> => {
+    if (!PUTER_WORKER_URL) throw new Error("Floor-plan analysis is unavailable: Worker URL is not configured");
+
+    const response = await puter.workers.exec(
+        `${PUTER_WORKER_URL}/api/projects/floor-plan-analysis/authorize`,
+        { method: "POST", body: JSON.stringify({ id }) },
+    );
+    let data: {
+        authorized?: boolean;
+        limit?: number;
+        remaining?: number;
+        error?: string;
+    };
+    try {
+        data = (await response.json()) as typeof data;
+    } catch {
+        throw new Error("The Worker returned an invalid analysis authorization response");
+    }
+    if (!response.ok) {
+        throw new Error(data.error || "Unable to authorize floor-plan analysis");
+    }
+    if (data.authorized !== true ||
+        typeof data.limit !== "number" ||
+        typeof data.remaining !== "number") {
+        throw new Error("The Worker returned an invalid analysis authorization");
+    }
+    return { limit: data.limit, remaining: data.remaining };
+};
+
+export const saveFloorPlanAnalysis = async (
+    id: string,
+    analysis: FloorPlanAnalysis,
+): Promise<FloorPlanAnalysis> => {
+    if (!PUTER_WORKER_URL) throw new Error("Floor-plan analysis is unavailable: Worker URL is not configured");
+
+    const response = await puter.workers.exec(
+        `${PUTER_WORKER_URL}/api/projects/floor-plan-analysis/save`,
+        {
+            method: "POST",
+            body: JSON.stringify({ id, analysis }),
+        },
+    );
+    let data: { analysis?: unknown; error?: string };
+    try {
+        data = (await response.json()) as typeof data;
+    } catch {
+        throw new Error("The Worker returned an invalid saved analysis response");
+    }
+    if (!response.ok) {
+        throw new Error(data.error || "Unable to save floor-plan analysis");
+    }
+    return validateFloorPlanAnalysis(data.analysis);
 };
 
 export const createProject = async ({ item, visibility="private" }: CreateProjectParams):
@@ -256,7 +325,7 @@ export const createProject = async ({ item, visibility="private" }: CreateProjec
                     return await resolvePrivateProjectAssets(project);
                 } catch (error) {
                     console.error(`Failed to load private images for project ${project.id}:`, error);
-                    return project;
+                    return { ...project, sourceImage: "", renderedImage: null };
                 }
             }))
             : [];

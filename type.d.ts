@@ -27,6 +27,7 @@ interface DesignItem {
     sharedBy?: string | null;
     sharedAt?: string | null;
     isPublic?: boolean;
+    floorPlanAnalysis?: import("./lib/floor-plan-analysis").FloorPlanAnalysis;
 }
 
 interface DesignConfig {

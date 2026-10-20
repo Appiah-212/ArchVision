@@ -1,10 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useOutletContext, useParams } from "react-router"
-import { generate3DView } from "../../lib/ai.action";
+import { analyzeFloorPlan, generate3DView } from "../../lib/ai.action";
 import { Box, Copy, Download, RefreshCcw, Share2, X } from "lucide-react";
 import Button from "../../components/ui/button";
-import { authorizeProjectGeneration, createProject, getProjectById, shareProject, unshareProject } from "../../lib/puter.action";
+import {
+    authorizeFloorPlanAnalysis,
+    authorizeProjectGeneration,
+    createProject,
+    getProjectById,
+    saveFloorPlanAnalysis,
+    shareProject,
+    unshareProject,
+} from "../../lib/puter.action";
 import { ReactCompareSlider, ReactCompareSliderImage } from "react-compare-slider";
+import FloorPlanAnalysisPanel from "../../components/FloorPlanAnalysisPanel";
+import type { FloorPlanAnalysis } from "../../lib/floor-plan-analysis";
 
 const VisualizerId = () => {
     const { id } = useParams();
@@ -30,6 +40,27 @@ const VisualizerId = () => {
     const canUnshareProject = project?.isPublic && project.ownerId === userId;
 
     const handleBack = () =>navigate('/');
+
+    const handleAnalyzeFloorPlan = async (): Promise<FloorPlanAnalysis> => {
+        if (!id || !project?.sourceImage) {
+            throw new Error("The project source image is unavailable.");
+        }
+        if (!canGenerateProject) {
+            throw new Error("Only the project owner can analyze this floor plan.");
+        }
+        await authorizeFloorPlanAnalysis(id);
+        return analyzeFloorPlan(project.sourceImage);
+    };
+
+    const handleApproveAnalysis = async (analysis: FloorPlanAnalysis) => {
+        if (!id || !project || !canGenerateProject) {
+            throw new Error("Only the project owner can save this floor-plan analysis.");
+        }
+        const savedAnalysis = await saveFloorPlanAnalysis(id, analysis);
+        setProject((current) => current
+            ? { ...current, floorPlanAnalysis: savedAnalysis }
+            : current);
+    };
 
     const handleExport = async () => {
         if (!currentImage) return;
@@ -346,6 +377,15 @@ const VisualizerId = () => {
                     )}
 
                 </div>
+
+                {project && (
+                    <FloorPlanAnalysisPanel
+                        approvedAnalysis={project.floorPlanAnalysis}
+                        isOwner={canGenerateProject}
+                        onAnalyze={handleAnalyzeFloorPlan}
+                        onApprove={handleApproveAnalysis}
+                    />
+                )}
 
                 <div className="panel compare">
                     <div className="panel-header">

@@ -142,10 +142,12 @@ console.info(
               {projects.map(({id, name, renderedImage, sourceImage, timestamp, isPublic, sharedBy})=> (
                 <div key={id} className="project-card group" onClick={() => navigate(`visualizer/${id}`)}>
               <div className="preview">
-                <img
-                src={renderedImage || sourceImage}
-                alt="Project"
-                />
+                {(renderedImage || sourceImage) && (
+                  <img
+                    src={renderedImage || sourceImage}
+                    alt="Project"
+                  />
+                )}
 
                 <div className="badge">
                   <span>{isPublic ? "Community" : "Private"}</span>

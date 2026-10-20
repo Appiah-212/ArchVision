@@ -48,8 +48,29 @@ const privateAssetUploadHandler = handlers.get('POST /api/projects/private-asset
 const projectHandler = handlers.get('GET /api/projects/get')!;
 const saveHandler = handlers.get('POST /api/projects/save')!;
 const generationHandler = handlers.get('POST /api/projects/generation/authorize')!;
+const analysisAuthorizationHandler = handlers.get('POST /api/projects/floor-plan-analysis/authorize')!;
+const analysisSaveHandler = handlers.get('POST /api/projects/floor-plan-analysis/save')!;
 const shareHandler = handlers.get('POST /api/projects/share')!;
 const unshareHandler = handlers.get('POST /api/projects/unshare')!;
+
+const approvedAnalysis = {
+  schemaVersion: 1,
+  model: 'gemini-2.5-flash',
+  analyzedAt: '2026-10-19T12:00:00.000Z',
+  summary: 'One enclosed room is visible.',
+  rooms: [{
+    id: 'room-1',
+    label: 'Room 1',
+    possibleFunction: null,
+    confidence: 0.62,
+    evidence: 'A rectangular enclosure is visible.',
+  }],
+  doors: [],
+  windows: [],
+  walls: [],
+  relationships: [],
+  uncertainties: ['The room function is not identifiable.'],
+};
 
 const createUserPuter = (uuid: string) => ({
   auth: { getUser: vi.fn().mockResolvedValue({ uuid }) },
@@ -199,6 +220,7 @@ describe('Worker private project image access', () => {
             ownerId: 'owner-1',
             sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
             isPublic: false,
+            floorPlanAnalysis: { summary: 'Owner-only interpretation' },
           }
         : null,
     );
@@ -217,6 +239,12 @@ describe('Worker private project image access', () => {
     });
 
     expect(response.status).toBe(200);
+    expect(workerKv.set).toHaveBeenCalledWith(
+      'archvision_public_project_plan-1',
+      expect.not.objectContaining({
+        floorPlanAnalysis: expect.anything(),
+      }),
+    );
     expect(workerKv.set).toHaveBeenCalledWith(
       'archvision_public_project_plan-1',
       expect.objectContaining({
@@ -381,5 +409,118 @@ describe('Worker private project image access', () => {
       expect.stringMatching(/^archvision_ai_generation:owner-1:\d{4}-\d{2}-\d{2}$/),
       -1,
     );
+  });
+
+  it('authorizes floor-plan analysis for the owner and charges the shared AI quota', async () => {
+    const owner = createUserPuter('owner-1');
+    owner.kv.get.mockResolvedValue({
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+    });
+
+    const response = await analysisAuthorizationHandler({
+      request: new Request('https://worker.example/api/projects/floor-plan-analysis/authorize', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1' }),
+      }),
+      user: { puter: owner },
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      authorized: true,
+      limit: 20,
+      remaining: 19,
+    });
+    expect(workerKv.incr).toHaveBeenCalledWith(
+      expect.stringMatching(/^archvision_ai_generation:owner-1:\d{4}-\d{2}-\d{2}$/),
+    );
+  });
+
+  it('rejects non-owners before charging analysis quota', async () => {
+    const otherUser = createUserPuter('owner-2');
+    otherUser.kv.get.mockResolvedValue(null);
+    workerKv.get.mockResolvedValue({
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'https://images.puter.site/plan-1/source.png',
+    });
+
+    const response = await analysisAuthorizationHandler({
+      request: new Request('https://worker.example/api/projects/floor-plan-analysis/authorize', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1' }),
+      }),
+      user: { puter: otherUser },
+    });
+
+    expect(response.status).toBe(403);
+    expect(workerKv.incr).not.toHaveBeenCalled();
+  });
+
+  it('persists an approved interpretation only in the owner private project record', async () => {
+    const owner = createUserPuter('owner-1');
+    owner.kv.get.mockResolvedValue({
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+      isPublic: false,
+    });
+
+    const response = await analysisSaveHandler({
+      request: new Request('https://worker.example/api/projects/floor-plan-analysis/save', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1', analysis: approvedAnalysis }),
+      }),
+      user: { puter: owner },
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ analysis: approvedAnalysis });
+    expect(owner.kv.set).toHaveBeenCalledWith(
+      'archvision_project_owner-1_plan-1',
+      expect.objectContaining({
+        ownerId: 'owner-1',
+        floorPlanAnalysis: approvedAnalysis,
+      }),
+    );
+    expect(workerKv.set).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed analysis and non-owner saves', async () => {
+    const owner = createUserPuter('owner-1');
+    owner.kv.get.mockResolvedValue({
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+    });
+    const invalid = { ...approvedAnalysis, rooms: [{ ...approvedAnalysis.rooms[0], confidence: 5 }] };
+    const invalidResponse = await analysisSaveHandler({
+      request: new Request('https://worker.example/api/projects/floor-plan-analysis/save', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1', analysis: invalid }),
+      }),
+      user: { puter: owner },
+    });
+    expect(invalidResponse.status).toBe(400);
+    expect(owner.kv.set).not.toHaveBeenCalled();
+
+    const otherUser = createUserPuter('owner-2');
+    otherUser.kv.get.mockResolvedValue(null);
+    workerKv.get.mockResolvedValue({
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'https://images.puter.site/plan-1/source.png',
+    });
+    const denied = await analysisSaveHandler({
+      request: new Request('https://worker.example/api/projects/floor-plan-analysis/save', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1', analysis: approvedAnalysis }),
+      }),
+      user: { puter: otherUser },
+    });
+    expect(denied.status).toBe(403);
+    expect(otherUser.kv.set).not.toHaveBeenCalled();
   });
 });
