@@ -18,6 +18,7 @@ const workerFs = {
 };
 const workerKv = {
   del: vi.fn(),
+  expire: vi.fn(),
   get: vi.fn(),
   incr: vi.fn(),
   list: vi.fn(),
@@ -43,11 +44,110 @@ runInNewContext(workerSource, {
   },
 });
 
+it('persists authorized generation metadata next to the render and prevents render overwrites', async () => {
+  const owner = createUserPuter('owner-1');
+  const generationTimestamp = '2026-10-20T00:00:00.000Z';
+  const activeMetadata = {
+    generationMode: 'baseline',
+    modelIdentifier: 'gemini-3.1-flash-image-preview',
+    promptTemplateVersion: 'archvision-baseline-v1',
+    configurationSnapshot: null,
+    approvedAnalysisRevision: null,
+    generationTimestamp,
+    generationStatus: 'generating',
+  };
+  const existingProject = {
+    id: 'plan-1',
+    ownerId: 'owner-1',
+    isPublic: false,
+    generationMode: 'baseline',
+    sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+    generationMetadata: activeMetadata,
+  };
+  owner.kv.get.mockResolvedValue(existingProject);
+
+  const completed = {
+    ...activeMetadata,
+    generationStatus: 'complete',
+    generationLatencyMs: 1234,
+  };
+  const saved = await saveHandler({
+    request: new Request('https://worker.example/api/projects/save', {
+      method: 'POST',
+      body: JSON.stringify({
+        project: {
+          ...existingProject,
+          renderedImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174001.png',
+          generationMetadata: completed,
+        },
+        visibility: 'private',
+      }),
+    }),
+    user: { puter: owner },
+  });
+  expect(saved.status).toBe(200);
+  await expect(saved.json()).resolves.toMatchObject({
+    project: {
+      renderedImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174001.png',
+      generationMetadata: completed,
+      sourceImage: existingProject.sourceImage,
+    },
+  });
+
+  owner.kv.get.mockResolvedValue({
+    ...existingProject,
+    renderedImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174001.png',
+    generationMetadata: completed,
+  });
+  const overwrite = await saveHandler({
+    request: new Request('https://worker.example/api/projects/save', {
+      method: 'POST',
+      body: JSON.stringify({
+        project: {
+          ...existingProject,
+          renderedImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174002.png',
+        },
+        visibility: 'private',
+      }),
+    }),
+    user: { puter: owner },
+  });
+  expect(overwrite.status).toBe(409);
+});
+
+it('requires Worker authorization before saving a newly generated render', async () => {
+  const owner = createUserPuter('owner-1');
+  owner.kv.get.mockResolvedValue({
+    id: 'plan-1',
+    ownerId: 'owner-1',
+    sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+  });
+
+  const response = await saveHandler({
+    request: new Request('https://worker.example/api/projects/save', {
+      method: 'POST',
+      body: JSON.stringify({
+        project: {
+          id: 'plan-1',
+          sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+          renderedImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174001.png',
+        },
+        visibility: 'private',
+      }),
+    }),
+    user: { puter: owner },
+  });
+
+  expect(response.status).toBe(409);
+  expect(owner.kv.set).not.toHaveBeenCalled();
+});
+
 const privateAssetHandler = handlers.get('GET /api/projects/private-asset')!;
 const privateAssetUploadHandler = handlers.get('POST /api/projects/private-asset')!;
 const projectHandler = handlers.get('GET /api/projects/get')!;
 const saveHandler = handlers.get('POST /api/projects/save')!;
 const generationHandler = handlers.get('POST /api/projects/generation/authorize')!;
+const generationFailureHandler = handlers.get('POST /api/projects/generation/fail')!;
 const analysisAuthorizationHandler = handlers.get('POST /api/projects/floor-plan-analysis/authorize')!;
 const analysisSaveHandler = handlers.get('POST /api/projects/floor-plan-analysis/save')!;
 const renderConfigurationSaveHandler = handlers.get('POST /api/projects/render-configuration/save')!;
@@ -98,6 +198,7 @@ describe('Worker private project image access', () => {
     workerFs.read.mockResolvedValue(privateImage);
     workerKv.get.mockResolvedValue(null);
     workerKv.incr.mockResolvedValue(1);
+    workerKv.expire.mockResolvedValue(true);
   });
 
   it('requires authentication for private image retrieval', async () => {
@@ -175,6 +276,31 @@ describe('Worker private project image access', () => {
     expect(owner.kv.set).not.toHaveBeenCalled();
   });
 
+  it('surfaces project persistence failures instead of reporting a successful save', async () => {
+    const owner = createUserPuter('owner-1');
+    owner.kv.get.mockResolvedValue(null);
+    owner.kv.set.mockRejectedValue(new Error('KV write unavailable'));
+    const response = await saveHandler({
+      request: new Request('https://worker.example/api/projects/save', {
+        method: 'POST',
+        body: JSON.stringify({
+          project: {
+            id: 'plan-1',
+            sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+          },
+          visibility: 'private',
+        }),
+      }),
+      user: { puter: owner },
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      error: 'Failed to save project',
+      message: 'KV write unavailable',
+    });
+  });
+
   it('preserves private metadata when a project save omits unrelated fields', async () => {
     const owner = createUserPuter('owner-1');
     owner.kv.get.mockResolvedValue({
@@ -210,6 +336,130 @@ describe('Worker private project image access', () => {
         name: 'Existing project',
       }),
     );
+  });
+
+  it('does not let a general project save overwrite approved analysis or saved preferences', async () => {
+    const owner = createUserPuter('owner-1');
+    const existingProject = {
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+      floorPlanAnalysis: approvedAnalysis,
+      renderConfiguration,
+      approvedAnalysisRevision: 2,
+    };
+    owner.kv.get.mockResolvedValue(existingProject);
+    const alteredAnalysis = { ...approvedAnalysis, summary: 'Unapproved structural changes' };
+    const alteredConfiguration = {
+      ...renderConfiguration,
+      architecturalStyle: 'Industrial',
+    };
+
+    const response = await saveHandler({
+      request: new Request('https://worker.example/api/projects/save', {
+        method: 'POST',
+        body: JSON.stringify({
+          project: {
+            ...existingProject,
+            floorPlanAnalysis: alteredAnalysis,
+            renderConfiguration: alteredConfiguration,
+          },
+          visibility: 'private',
+        }),
+      }),
+      user: { puter: owner },
+    });
+
+    expect(response.status).toBe(200);
+    expect(owner.kv.set).toHaveBeenCalledWith(
+      'archvision_project_owner-1_plan-1',
+      expect.objectContaining({
+        floorPlanAnalysis: approvedAnalysis,
+        renderConfiguration,
+        approvedAnalysisRevision: 2,
+      }),
+    );
+  });
+
+  it('authorizes Enhanced generation only from owner-approved analysis and saved preferences', async () => {
+    const owner = createUserPuter('owner-1');
+    const project = {
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+      generationMode: 'enhanced',
+      floorPlanAnalysis: approvedAnalysis,
+      approvedAnalysisRevision: 4,
+      renderConfiguration,
+    };
+    owner.kv.get.mockResolvedValue(project);
+
+    const response = await generationHandler({
+      request: new Request('https://worker.example/api/projects/generation/authorize', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1' }),
+      }),
+      user: { puter: owner },
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      authorized: true,
+      generationMode: 'enhanced',
+      approvedAnalysisRevision: 4,
+      analysis: approvedAnalysis,
+      configuration: renderConfiguration,
+    });
+    expect(owner.kv.set).toHaveBeenCalledWith(
+      'archvision_project_owner-1_plan-1',
+      expect.objectContaining({
+        generationMetadata: expect.objectContaining({
+          generationMode: 'enhanced',
+          configurationSnapshot: renderConfiguration,
+          approvedAnalysisRevision: 4,
+          generationStatus: 'generating',
+        }),
+      }),
+    );
+  });
+
+  it('rejects Enhanced generation when either approved analysis or valid saved settings are missing', async () => {
+    const owner = createUserPuter('owner-1');
+    const project = {
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+      generationMode: 'enhanced',
+    };
+    owner.kv.get.mockResolvedValue(project);
+
+    const missingAnalysis = await generationHandler({
+      request: new Request('https://worker.example/api/projects/generation/authorize', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1' }),
+      }),
+      user: { puter: owner },
+    });
+    expect(missingAnalysis.status).toBe(400);
+    expect((await missingAnalysis.json()).error).toContain('requires approved floor-plan analysis');
+
+    owner.kv.get.mockResolvedValue({
+      ...project,
+      floorPlanAnalysis: approvedAnalysis,
+      approvedAnalysisRevision: 1,
+      renderConfiguration: { ...renderConfiguration, furnitureStyle: 'Unsupported' },
+    });
+    const invalidConfiguration = await generationHandler({
+      request: new Request('https://worker.example/api/projects/generation/authorize', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1' }),
+      }),
+      user: { puter: owner },
+    });
+    expect(invalidConfiguration.status).toBe(400);
+    expect((await invalidConfiguration.json()).error).toContain('requires valid saved design settings');
+    expect(workerKv.incr).not.toHaveBeenCalled();
   });
 
   it('allows only the owning Puter user to retrieve a private project image', async () => {
@@ -252,6 +502,8 @@ describe('Worker private project image access', () => {
       isPublic: true,
       floorPlanAnalysis: { summary: 'private structural notes' },
       renderConfiguration,
+      approvedAnalysisRevision: 2,
+      generationMetadata: { generationMode: 'enhanced', configurationSnapshot: renderConfiguration },
     };
     workerKv.get.mockResolvedValue(project);
 
@@ -391,14 +643,29 @@ describe('Worker private project image access', () => {
       user: { puter: owner },
     });
 
-    expect(response.status).toBe(200);
+    const authorizationBody = await response.clone().json();
+    expect(response.status, JSON.stringify(authorizationBody)).toBe(200);
     await expect(response.json()).resolves.toEqual({
       authorized: true,
       limit: 20,
       remaining: 19,
+      generationMode: 'baseline',
+      generationTimestamp: expect.any(String),
+      approvedAnalysisRevision: null,
     });
     expect(workerKv.incr).toHaveBeenCalledWith(
       expect.stringMatching(/^archvision_ai_generation:owner-1:\d{4}-\d{2}-\d{2}$/),
+    );
+    expect(owner.kv.set).toHaveBeenCalledWith(
+      'archvision_project_owner-1_plan-1',
+      expect.objectContaining({
+        generationMode: 'baseline',
+        generationMetadata: expect.objectContaining({
+          generationStatus: 'generating',
+          configurationSnapshot: null,
+          approvedAnalysisRevision: null,
+        }),
+      }),
     );
   });
 
@@ -450,7 +717,9 @@ describe('Worker private project image access', () => {
       ownerId: 'owner-1',
       sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
     });
-    workerKv.incr.mockResolvedValue(21);
+    workerKv.incr.mockImplementation(async (key: string) =>
+      key.startsWith('archvision_generation_lock:') ? 1 : 21,
+    );
 
     const response = await generationHandler({
       request: new Request('https://worker.example/api/projects/generation/authorize', {
@@ -466,9 +735,78 @@ describe('Worker private project image access', () => {
       limit: 20,
     });
     expect(workerKv.incr).toHaveBeenNthCalledWith(
-      2,
+      3,
       expect.stringMatching(/^archvision_ai_generation:owner-1:\d{4}-\d{2}-\d{2}$/),
       -1,
+    );
+  });
+
+  it('rejects a duplicate authorization before charging quota or making another AI request', async () => {
+    const owner = createUserPuter('owner-1');
+    owner.kv.get.mockResolvedValue({
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+    });
+    let lockCount = 0;
+    workerKv.incr.mockImplementation(async (key: string, amount = 1) => {
+      if (key.startsWith('archvision_generation_lock:')) {
+        lockCount += typeof amount === 'number' ? amount : 1;
+        return lockCount;
+      }
+      return 1;
+    });
+
+    const makeRequest = () => generationHandler({
+      request: new Request('https://worker.example/api/projects/generation/authorize', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1' }),
+      }),
+      user: { puter: owner },
+    });
+    const first = await makeRequest();
+    const duplicate = await makeRequest();
+
+    expect(first.status).toBe(200);
+    expect(duplicate.status).toBe(409);
+    expect(workerKv.incr.mock.calls.filter(([key]) =>
+      String(key).startsWith('archvision_ai_generation:'),
+    )).toHaveLength(1);
+  });
+
+  it('records an authorized generation failure only for the active owner run', async () => {
+    const owner = createUserPuter('owner-1');
+    const timestamp = '2026-10-20T00:00:00.000Z';
+    const activeProject = {
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+      generationMetadata: {
+        generationMode: 'baseline',
+        modelIdentifier: 'gemini-3.1-flash-image-preview',
+        promptTemplateVersion: 'archvision-baseline-v1',
+        configurationSnapshot: null,
+        approvedAnalysisRevision: null,
+        generationTimestamp: timestamp,
+        generationStatus: 'generating',
+      },
+    };
+    owner.kv.get.mockResolvedValue(activeProject);
+
+    const response = await generationFailureHandler({
+      request: new Request('https://worker.example/api/projects/generation/fail', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1', generationTimestamp: timestamp }),
+      }),
+      user: { puter: owner },
+    });
+
+    expect(response.status).toBe(200);
+    expect(owner.kv.set).toHaveBeenCalledWith(
+      'archvision_project_owner-1_plan-1',
+      expect.objectContaining({
+        generationMetadata: expect.objectContaining({ generationStatus: 'failed' }),
+      }),
     );
   });
 
@@ -538,12 +876,16 @@ describe('Worker private project image access', () => {
     });
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ analysis: approvedAnalysis });
+    await expect(response.json()).resolves.toEqual({
+      analysis: approvedAnalysis,
+      approvedAnalysisRevision: 1,
+    });
     expect(owner.kv.set).toHaveBeenCalledWith(
       'archvision_project_owner-1_plan-1',
       expect.objectContaining({
         ownerId: 'owner-1',
         floorPlanAnalysis: approvedAnalysis,
+        approvedAnalysisRevision: 1,
       }),
     );
     expect(workerKv.set).not.toHaveBeenCalled();

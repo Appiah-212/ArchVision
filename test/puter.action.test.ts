@@ -35,6 +35,7 @@ import {
   authorizeProjectGeneration,
   createProject,
   getProjectById,
+  markProjectGenerationFailed,
   saveRenderConfiguration,
   saveFloorPlanAnalysis,
 } from '../lib/puter.action';
@@ -221,6 +222,9 @@ describe('public project retrieval', () => {
       authorized: true,
       limit: 20,
       remaining: 19,
+      generationMode: 'baseline',
+      generationTimestamp: '2026-10-20T00:00:00.000Z',
+      approvedAnalysisRevision: null,
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -229,12 +233,61 @@ describe('public project retrieval', () => {
     await expect(authorizeProjectGeneration('plan-1')).resolves.toEqual({
       limit: 20,
       remaining: 19,
+      generationMode: 'baseline',
+      generationTimestamp: '2026-10-20T00:00:00.000Z',
+      approvedAnalysisRevision: null,
     });
     expect(exec).toHaveBeenCalledWith(
       expect.stringContaining('/api/projects/generation/authorize'),
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ id: 'plan-1' }),
+      }),
+    );
+  });
+
+  it('validates and returns the Worker-approved Enhanced input snapshot', async () => {
+    const configuration = createDefaultRenderConfiguration('2026-10-20T00:00:00.000Z');
+    exec.mockResolvedValue(new Response(JSON.stringify({
+      authorized: true,
+      limit: 20,
+      remaining: 18,
+      generationMode: 'enhanced',
+      generationTimestamp: '2026-10-20T00:00:00.000Z',
+      approvedAnalysisRevision: 3,
+      analysis: approvedAnalysis,
+      configuration,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await expect(authorizeProjectGeneration('plan-1')).resolves.toMatchObject({
+      generationMode: 'enhanced',
+      approvedAnalysisRevision: 3,
+      analysis: approvedAnalysis,
+      configuration,
+    });
+  });
+
+  it('reports failures through the authorized Worker endpoint', async () => {
+    exec.mockResolvedValue(new Response(JSON.stringify({ failed: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await expect(markProjectGenerationFailed(
+      'plan-1',
+      '2026-10-20T00:00:00.000Z',
+    )).resolves.toBeUndefined();
+    expect(exec).toHaveBeenCalledWith(
+      expect.stringContaining('/api/projects/generation/fail'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          id: 'plan-1',
+          generationTimestamp: '2026-10-20T00:00:00.000Z',
+        }),
       }),
     );
   });
@@ -276,13 +329,16 @@ describe('public project retrieval', () => {
   });
 
   it('saves and validates an approved interpretation through the Worker', async () => {
-    exec.mockResolvedValue(new Response(JSON.stringify({ analysis: approvedAnalysis }), {
+    exec.mockResolvedValue(new Response(JSON.stringify({
+      analysis: approvedAnalysis,
+      approvedAnalysisRevision: 1,
+    }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     }));
 
     await expect(saveFloorPlanAnalysis('plan-1', approvedAnalysis)).resolves.toEqual(
-      approvedAnalysis,
+      { analysis: approvedAnalysis, approvedAnalysisRevision: 1 },
     );
     expect(exec).toHaveBeenCalledWith(
       expect.stringContaining('/api/projects/floor-plan-analysis/save'),

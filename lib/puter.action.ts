@@ -7,6 +7,7 @@ import {
     validateRenderConfiguration,
     type RenderConfiguration,
 } from "./render-configuration";
+import type { AuthorizedGenerationContext, GenerationMode } from "./generation-types";
 
 const PRIVATE_ASSET_PREFIX = "archvision_private_asset:";
 
@@ -96,7 +97,17 @@ const resolvePrivateProjectAssets = async (project: DesignItem): Promise<DesignI
         );
         renderedImage = null;
     }
-    return { ...project, sourceImage: sourceResult.value || "", renderedImage };
+    return {
+        ...project,
+        sourceImage: sourceResult.value || "",
+        ...(project.sourceImage?.startsWith(PRIVATE_ASSET_PREFIX)
+            ? { sourcePath: project.sourceImage }
+            : project.sourcePath ? { sourcePath: project.sourcePath } : {}),
+        renderedImage,
+        ...(project.renderedImage?.startsWith(PRIVATE_ASSET_PREFIX)
+            ? { renderedPath: project.renderedImage }
+            : project.renderedPath ? { renderedPath: project.renderedPath } : {}),
+    };
 };
 
 export const signIn = async () => await puter.auth.signIn()
@@ -113,7 +124,7 @@ export const getCurrentUser = async () => {
 
 export const authorizeProjectGeneration = async (
     id: string,
-): Promise<{ limit: number; remaining: number }> => {
+): Promise<{ limit: number; remaining: number } & AuthorizedGenerationContext> => {
     if (!PUTER_WORKER_URL) throw new Error("AI generation is unavailable: Worker URL is not configured");
 
     const response = await puter.workers.exec(
@@ -127,6 +138,11 @@ export const authorizeProjectGeneration = async (
         authorized?: boolean;
         limit?: number;
         remaining?: number;
+        generationMode?: GenerationMode;
+        generationTimestamp?: string;
+        approvedAnalysisRevision?: number | null;
+        analysis?: unknown;
+        configuration?: unknown;
         error?: string;
     };
     try {
@@ -139,10 +155,51 @@ export const authorizeProjectGeneration = async (
     }
     if (data.authorized !== true ||
         typeof data.limit !== "number" ||
-        typeof data.remaining !== "number") {
+        typeof data.remaining !== "number" ||
+        (data.generationMode !== "baseline" && data.generationMode !== "enhanced") ||
+        typeof data.generationTimestamp !== "string" ||
+        !Number.isFinite(Date.parse(data.generationTimestamp)) ||
+        (data.approvedAnalysisRevision !== null &&
+            (!Number.isSafeInteger(data.approvedAnalysisRevision) ||
+                (data.approvedAnalysisRevision ?? 0) < 1))) {
         throw new Error("The Worker returned an invalid generation authorization");
     }
-    return { limit: data.limit, remaining: data.remaining };
+    if (data.generationMode === "enhanced" &&
+        (data.approvedAnalysisRevision === null || data.analysis === undefined ||
+            data.configuration === undefined)) {
+        throw new Error("The Worker did not return the approved enhanced-generation inputs");
+    }
+    return {
+        limit: data.limit,
+        remaining: data.remaining,
+        generationMode: data.generationMode,
+        generationTimestamp: data.generationTimestamp,
+        approvedAnalysisRevision: data.approvedAnalysisRevision ?? null,
+        ...(data.generationMode === "enhanced"
+            ? {
+                analysis: validateFloorPlanAnalysis(data.analysis),
+                configuration: validateRenderConfiguration(data.configuration),
+            }
+            : {}),
+    };
+};
+
+export const markProjectGenerationFailed = async (
+    id: string,
+    generationTimestamp: string,
+): Promise<void> => {
+    if (!PUTER_WORKER_URL) throw new Error("AI generation is unavailable: Worker URL is not configured");
+    const response = await puter.workers.exec(
+        `${PUTER_WORKER_URL}/api/projects/generation/fail`,
+        {
+            method: "POST",
+            body: JSON.stringify({ id, generationTimestamp }),
+        },
+    );
+    if (!response.ok) {
+        const data = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(data?.error || "Unable to record the generation failure");
+    }
 };
 
 export const authorizeFloorPlanAnalysis = async (
@@ -179,7 +236,7 @@ export const authorizeFloorPlanAnalysis = async (
 export const saveFloorPlanAnalysis = async (
     id: string,
     analysis: FloorPlanAnalysis,
-): Promise<FloorPlanAnalysis> => {
+): Promise<{ analysis: FloorPlanAnalysis; approvedAnalysisRevision: number }> => {
     if (!PUTER_WORKER_URL) throw new Error("Floor-plan analysis is unavailable: Worker URL is not configured");
 
     const response = await puter.workers.exec(
@@ -189,7 +246,7 @@ export const saveFloorPlanAnalysis = async (
             body: JSON.stringify({ id, analysis }),
         },
     );
-    let data: { analysis?: unknown; error?: string };
+    let data: { analysis?: unknown; approvedAnalysisRevision?: number; error?: string };
     try {
         data = (await response.json()) as typeof data;
     } catch {
@@ -198,7 +255,14 @@ export const saveFloorPlanAnalysis = async (
     if (!response.ok) {
         throw new Error(data.error || "Unable to save floor-plan analysis");
     }
-    return validateFloorPlanAnalysis(data.analysis);
+    if (!Number.isSafeInteger(data.approvedAnalysisRevision) ||
+        (data.approvedAnalysisRevision ?? 0) < 1) {
+        throw new Error("The Worker returned an invalid approved analysis revision");
+    }
+    return {
+        analysis: validateFloorPlanAnalysis(data.analysis),
+        approvedAnalysisRevision: data.approvedAnalysisRevision!,
+    };
 };
 
 export const saveRenderConfiguration = async (
@@ -238,6 +302,12 @@ export const createProject = async ({ item, visibility="private" }: CreateProjec
         const renderedImage = item.renderedImage ?? "";
         const sourceFile = item.sourceFile ?? null;
         const renderedFile = item.renderedFile ?? null;
+        const existingSourceRef = item.sourcePath?.startsWith(PRIVATE_ASSET_PREFIX)
+            ? item.sourcePath
+            : null;
+        const existingRenderRef = item.renderedPath?.startsWith(PRIVATE_ASSET_PREFIX)
+            ? item.renderedPath
+            : null;
         const publicAssets: HostedAsset[] = [];
         let resolvedSource: string;
         let resolvedRender: string | null | undefined;
@@ -261,14 +331,14 @@ export const createProject = async ({ item, visibility="private" }: CreateProjec
             if (renderedAsset) publicAssets.push(renderedAsset);
             resolvedRender = renderedAsset?.url;
         } else {
-            resolvedSource = await uploadPrivateAsset({
+            resolvedSource = existingSourceRef ?? await uploadPrivateAsset({
                 id: projectId,
                 label: "source",
                 file: sourceFile,
                 url: sourceImage,
             });
             resolvedRender = renderedFile || renderedImage
-                ? await uploadPrivateAsset({
+                ? existingRenderRef ?? await uploadPrivateAsset({
                     id: projectId,
                     label: "rendered",
                     file: renderedFile,
@@ -293,14 +363,14 @@ export const createProject = async ({ item, visibility="private" }: CreateProjec
         const privateProject = visibility === "public"
             ? {
                 ...rest,
-                sourceImage: await uploadPrivateAsset({
+                sourceImage: existingSourceRef ?? await uploadPrivateAsset({
                     id: projectId,
                     label: "source",
                     file: sourceFile,
                     url: sourceImage,
                 }),
                 renderedImage: renderedFile || renderedImage
-                    ? await uploadPrivateAsset({
+                    ? existingRenderRef ?? await uploadPrivateAsset({
                         id: projectId,
                         label: "rendered",
                         file: renderedFile,

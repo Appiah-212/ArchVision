@@ -29,6 +29,9 @@ interface DesignItem {
     isPublic?: boolean;
     floorPlanAnalysis?: import("./lib/floor-plan-analysis").FloorPlanAnalysis;
     renderConfiguration?: import("./lib/render-configuration").RenderConfiguration;
+    generationMode?: import("./lib/generation-types").GenerationMode;
+    generationMetadata?: import("./lib/generation-types").GenerationMetadata;
+    approvedAnalysisRevision?: number;
 }
 
 interface DesignConfig {
@@ -128,4 +131,9 @@ interface CreateProjectParams {
 interface Generate3DViewParams {
     sourceImage: string;
     projectId?: string | null;
+    generationMode?: import("./lib/generation-types").GenerationMode;
+    analysis?: import("./lib/floor-plan-analysis").FloorPlanAnalysis;
+    configuration?: import("./lib/render-configuration").RenderConfiguration;
+    approvedAnalysisRevision?: number | null;
+    generationTimestamp?: string;
 }

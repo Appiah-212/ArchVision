@@ -130,9 +130,34 @@ Design settings and approved floor-plan analysis are private project metadata. T
 
 ### Structural and aesthetic data remain separate
 
-The approved Phase 2.1 analysis contains structural observations (rooms, walls, doors, windows, relationships, evidence, confidence, and uncertainty). The Phase 2.2 configuration contains aesthetic preferences only. Editing or saving aesthetic preferences does not modify structural analysis. Additional design instructions are stored as user preference text and are **not sent to the current renderer or used as system instructions**.
+The approved Phase 2.1 analysis contains structural observations (rooms, walls, doors, windows, relationships, evidence, confidence, and uncertainty). The Phase 2.2 configuration contains aesthetic preferences only. Editing or saving aesthetic preferences does not modify structural analysis. Additional design instructions are untrusted visual preferences and are used only by Enhanced generation.
 
-These settings are prepared for the structure-aware generation work in Phase 2.3. They do not silently alter the existing baseline generation prompt or trigger an AI request when changed. ArchVision produces conceptual 3D-style images, not verified or editable CAD/BIM geometry.
+## Phase 2.3 generation modes
+
+Choose a mode on the upload screen, before a new project opens:
+
+- **Baseline** remains the default. It uses the original Phase 1 fixed prompt and the original Puter image-generation options. New baseline projects continue to render automatically when the owner opens the visualizer. Existing projects with no stored mode are treated as baseline.
+- **Enhanced** is explicit opt-in. Uploading opens the project without starting image generation or spending generation quota. The owner can request analysis, edit and approve it, configure and save design preferences, review readiness, then explicitly start Enhanced generation.
+
+Enhanced readiness requires the owner's approved floor-plan analysis and a valid saved design configuration. Floor-plan analysis itself remains an explicit, quota-counted AI request; it is never run automatically. Enhanced image-generation authorization is requested only when the owner selects **Start enhanced generation**.
+
+### Structure-aware prompt construction
+
+`lib/generation-prompt.ts` builds an Enhanced prompt deterministically from validated project inputs. Its sections cover source-image primacy, approved observations, spatial constraints, uncertainty handling, architectural style, materials/furnishings, lighting/perspective, and conceptual-use constraints. Observations include room labels and functions, walls, doors, windows, relationships, evidence, and recorded uncertainty. Structural observations and the source image take precedence over aesthetic preferences. Unknown details are not converted into asserted dimensions or architectural facts.
+
+Analysis text and custom design text remain untrusted data. The builder JSON-encodes these values inside explicitly delimited data sections, sets a strict instruction hierarchy, revalidates the input schemas, and rejects prompts exceeding 24,000 characters. This limits and organizes model input; prompt construction cannot guarantee layout fidelity or prevent every model interpretation error.
+
+### Pre-generation, authorization, and persistence
+
+The Worker derives the generation mode and Enhanced inputs from the owner-scoped project record; client-supplied project IDs are only lookup keys and do not establish ownership. It validates the approved analysis/configuration, enforces the existing shared daily AI quota, and takes a per-project generation lock before the client invokes Puter. Duplicate active requests are rejected; the lock expires after 30 minutes if a browser disappears before reporting completion or failure. Generation errors are recorded as failed and can be retried. Settings and analysis cannot be changed while generation is active.
+
+The saved private render stores `generationMode`, `modelIdentifier`, `promptTemplateVersion`, `configurationSnapshot`, `approvedAnalysisRevision`, `generationTimestamp`, `generationStatus`, and measured `generationLatencyMs`. Existing `sourceImage` and `renderedImage` fields remain unchanged. A successful render cannot be overwritten by another generation. Private analysis, configuration, and generation metadata remain excluded from public project copies.
+
+### Limitations and research preparation
+
+Both modes produce conceptual images from a 2D raster image, not verified CAD/BIM geometry, editable construction documents, measured dimensions, or professional design advice. Image generation can omit or alter features even when structural constraints are supplied. The two modes provide the preserved baseline and structured inputs needed for a controlled research comparison; mode and prompt metadata support later analysis but do not establish architectural consistency by themselves.
+
+This milestone deliberately does not add render history. The single-render metadata shape is compatible with a future Phase 2.4 version-history model, while the baseline/enhanced distinction and approved-analysis revision prepare the project for Phase 2.5 structural-fidelity evaluation. Those phases are not included here.
 
 ---
 

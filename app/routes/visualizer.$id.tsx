@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useOutletContext, useParams } from "react-router"
-import { analyzeFloorPlan, generate3DView } from "../../lib/ai.action";
+import {
+    analyzeFloorPlan,
+    generate3DView,
+    GENERATION_MODEL_IDENTIFIER,
+} from "../../lib/ai.action";
 import { Box, Copy, Download, RefreshCcw, Share2, X } from "lucide-react";
 import Button from "../../components/ui/button";
 import {
@@ -8,6 +12,7 @@ import {
     authorizeProjectGeneration,
     createProject,
     getProjectById,
+    markProjectGenerationFailed,
     saveFloorPlanAnalysis,
     saveRenderConfiguration,
     shareProject,
@@ -18,6 +23,14 @@ import FloorPlanAnalysisPanel from "../../components/FloorPlanAnalysisPanel";
 import type { FloorPlanAnalysis } from "../../lib/floor-plan-analysis";
 import ArchitecturalDesignSettingsPanel from "../../components/ArchitecturalDesignSettingsPanel";
 import type { RenderConfiguration } from "../../lib/render-configuration";
+import { isRenderConfiguration } from "../../lib/render-configuration";
+import {
+    getEnhancedGenerationReadiness,
+    isGenerationInProgress,
+    shouldAutomaticallyGenerate,
+} from "../../lib/generation-workflow";
+import type { GenerationMetadata, GenerationMode } from "../../lib/generation-types";
+import { ENHANCED_PROMPT_TEMPLATE_VERSION } from "../../lib/generation-prompt";
 
 const VisualizerId = () => {
     const { id } = useParams();
@@ -27,6 +40,7 @@ const VisualizerId = () => {
    
 
     const hasInitialGenerated = useRef(false);
+    const generationRequestInFlight = useRef(false);
 
     const [project, setProject] = useState<DesignItem | null>(null);
     const [isProjectLoading, setIsProjectLoading] = useState(true);
@@ -59,9 +73,13 @@ const VisualizerId = () => {
         if (!id || !project || !canGenerateProject) {
             throw new Error("Only the project owner can save this floor-plan analysis.");
         }
-        const savedAnalysis = await saveFloorPlanAnalysis(id, analysis);
+        const saved = await saveFloorPlanAnalysis(id, analysis);
         setProject((current) => current
-            ? { ...current, floorPlanAnalysis: savedAnalysis }
+            ? {
+                ...current,
+                floorPlanAnalysis: saved.analysis,
+                approvedAnalysisRevision: saved.approvedAnalysisRevision,
+            }
             : current);
     };
 
@@ -156,62 +174,165 @@ const VisualizerId = () => {
     };
 
     const runGeneration = async (item: DesignItem) => {
+        if (generationRequestInFlight.current) return;
         if (!id || !item.sourceImage) {
             setGenerationError("The project source image is unavailable.");
+            return;
+        }
+        if (isGenerationInProgress(item.generationMetadata)) {
+            setGenerationError("A generation request is already in progress for this project.");
             return;
         }
         if (!userId || item.ownerId !== userId) {
             setGenerationError("Only the project owner can generate a render.");
             return;
         }
+        const generationMode: GenerationMode = item.generationMode ?? "baseline";
+        if (item.renderedImage) {
+            setGenerationError("This project already has a render. Existing renders are not overwritten.");
+            return;
+        }
+        if (generationMode === "enhanced") {
+            const readiness = getEnhancedGenerationReadiness(
+                item.floorPlanAnalysis,
+                item.renderConfiguration,
+                true,
+                Boolean(item.renderedImage),
+            );
+            if (!readiness.ready) {
+                setGenerationError(readiness.missingPrerequisites.join(" "));
+                return;
+            }
+        }
 
+        generationRequestInFlight.current = true;
+        let authorizedTimestamp: string | null = null;
+        let activeMetadata: GenerationMetadata | null = null;
         try {
             setIsProcessing(true);
             setGenerationError(null);
             
-            await authorizeProjectGeneration(id);
+            const authorization = await authorizeProjectGeneration(id);
+            authorizedTimestamp = authorization.generationTimestamp;
+            const startingMetadata: GenerationMetadata = {
+                generationMode: authorization.generationMode,
+                modelIdentifier: GENERATION_MODEL_IDENTIFIER,
+                promptTemplateVersion: authorization.generationMode === "baseline"
+                    ? "archvision-baseline-v1"
+                    : ENHANCED_PROMPT_TEMPLATE_VERSION,
+                configurationSnapshot: authorization.configuration ?? null,
+                approvedAnalysisRevision: authorization.approvedAnalysisRevision,
+                generationTimestamp: authorization.generationTimestamp,
+                generationStatus: "generating",
+            };
+            activeMetadata = startingMetadata;
+            setProject((current) => current
+                ? { ...current, generationMetadata: startingMetadata }
+                : current);
 
             const aiStartTime = performance.now();
             let aiStatus = "FAILED";
             let result: Awaited<ReturnType<typeof generate3DView>>;
 
             try {
-            result = await generate3DView({
-                sourceImage: item.sourceImage
-            });
+                result = await generate3DView({
+                    sourceImage: item.sourceImage,
+                    generationMode: authorization.generationMode,
+                    analysis: authorization.analysis,
+                    configuration: authorization.configuration,
+                    approvedAnalysisRevision: authorization.approvedAnalysisRevision,
+                    generationTimestamp: authorization.generationTimestamp,
+                });
 
-            if (!result.renderedImage) {
-                throw new Error(
-                "The AI service returned no render. Please try again."
+                if (!result.renderedImage) {
+                    throw new Error("The AI service returned no render. Please try again.");
+                }
+
+                aiStatus = "SUCCESS";
+            } finally {
+                const aiDurationMs = performance.now() - aiStartTime;
+                console.info(
+                    `[ARCHVISION_METRIC] AI generation: ${aiDurationMs.toFixed(2)} ms | Status: ${aiStatus}`,
                 );
             }
 
-            aiStatus = "SUCCESS";
-            } finally {
-            const aiDurationMs = performance.now() - aiStartTime;
-
-            console.info(
-                `[ARCHVISION_METRIC] AI generation: ${aiDurationMs.toFixed(2)} ms | Status: ${aiStatus}`
-            );
-        }
-
+            const completedMetadata: GenerationMetadata = {
+                ...result.generationMetadata,
+                generationMode: authorization.generationMode,
+                modelIdentifier: GENERATION_MODEL_IDENTIFIER,
+                promptTemplateVersion: authorization.generationMode === "baseline"
+                    ? "archvision-baseline-v1"
+                    : ENHANCED_PROMPT_TEMPLATE_VERSION,
+                configurationSnapshot: authorization.configuration ?? null,
+                approvedAnalysisRevision: authorization.approvedAnalysisRevision,
+                generationTimestamp: authorization.generationTimestamp,
+                generationStatus: "complete",
+                generationLatencyMs: result.generationMetadata.generationLatencyMs,
+            };
             const updatedItem = {
                 ...item,
                 renderedImage: result.renderedImage,
                 renderedPath: result.renderedPath,
+                generationMode: authorization.generationMode,
+                generationMetadata: completedMetadata,
+                approvedAnalysisRevision: authorization.approvedAnalysisRevision ?? item.approvedAnalysisRevision,
                 timestamp: Date.now(),
                 ownerId: item.ownerId,
                 isPublic: item.isPublic ?? false,
             };
-            const saved = await createProject({
-                item: updatedItem,
-                visibility: item.isPublic ? "public" : "private",
-            });
+            const saveCompletedRender = async (candidate: typeof updatedItem) => {
+                const saved = await createProject({
+                    item: candidate,
+                    visibility: item.isPublic ? "public" : "private",
+                });
+                if (saved) return saved;
+
+                const refreshedProject = await getProjectById({ id });
+                if (!refreshedProject || refreshedProject.renderedImage) return null;
+
+                const refreshedMetadata: GenerationMetadata = refreshedProject.generationMetadata
+                    ? {
+                        ...candidate.generationMetadata,
+                        generationTimestamp: refreshedProject.generationMetadata.generationTimestamp,
+                        generationStatus: "complete",
+                        generationMode: refreshedProject.generationMetadata.generationMode ?? candidate.generationMetadata.generationMode,
+                        configurationSnapshot: refreshedProject.generationMetadata.configurationSnapshot ?? candidate.generationMetadata.configurationSnapshot,
+                        approvedAnalysisRevision: refreshedProject.generationMetadata.approvedAnalysisRevision ?? candidate.generationMetadata.approvedAnalysisRevision,
+                        modelIdentifier: refreshedProject.generationMetadata.modelIdentifier || candidate.generationMetadata.modelIdentifier,
+                        promptTemplateVersion: refreshedProject.generationMetadata.promptTemplateVersion || candidate.generationMetadata.promptTemplateVersion,
+                        generationLatencyMs: refreshedProject.generationMetadata.generationLatencyMs ?? candidate.generationMetadata.generationLatencyMs,
+                    }
+                    : candidate.generationMetadata;
+
+                return createProject({
+                    item: {
+                        ...candidate,
+                        generationMetadata: refreshedMetadata,
+                    },
+                    visibility: item.isPublic ? "public" : "private",
+                });
+            };
+            const saved = await saveCompletedRender(updatedItem);
             if (!saved) throw new Error("The render was generated but could not be saved.");
 
             setProject(saved);
             setCurrentImage(saved.renderedImage || result.renderedImage);
         } catch (error) {
+            if (authorizedTimestamp) {
+                try {
+                    await markProjectGenerationFailed(id, authorizedTimestamp);
+                    setProject((current) => current
+                        ? {
+                            ...current,
+                            generationMetadata: activeMetadata
+                                ? { ...activeMetadata, generationStatus: "failed" }
+                                : current.generationMetadata,
+                        }
+                        : current);
+                } catch (persistenceError) {
+                    console.error("Failed to record generation failure:", persistenceError);
+                }
+            }
             console.error("AI generation failed:", error);
             setGenerationError(
                 error instanceof Error
@@ -219,6 +340,7 @@ const VisualizerId = () => {
                     : "AI generation failed. Please try again.",
             );
         } finally {
+            generationRequestInFlight.current = false;
             setIsProcessing(false);
         }
     }
@@ -271,7 +393,9 @@ const VisualizerId = () => {
     }
 
     hasInitialGenerated.current = true;
-    void runGeneration(project);
+    if (shouldAutomaticallyGenerate(project)) {
+        void runGeneration(project);
+    }
   }, [project, isProjectLoading, canGenerateProject]);
     return (
                     
@@ -380,7 +504,10 @@ const VisualizerId = () => {
                     {generationError && (
                         <div className="panel-actions">
                             <p role="alert" className="note">{generationError}</p>
-                            {project && canGenerateProject && (
+                            {project && canGenerateProject &&
+                                (project.generationMode ?? "baseline") === "baseline" &&
+                                project.generationMetadata?.generationStatus !== "failed" &&
+                                !isGenerationInProgress(project.generationMetadata) && (
                                 <Button
                                     size="sm"
                                     onClick={() => void runGeneration(project)}
@@ -393,6 +520,59 @@ const VisualizerId = () => {
                     )}
 
                 </div>
+
+                {project && (
+                    <section className="generation-workflow" aria-labelledby="generation-workflow-title">
+                        <div>
+                            <p className="generation-workflow-eyebrow">Generation workflow</p>
+                            <h2 id="generation-workflow-title">
+                                {project.generationMode === "enhanced" ? "Enhanced generation" : "Baseline generation"}
+                            </h2>
+                            <p>
+                                {project.generationMode === "enhanced"
+                                    ? "The source plan, approved structural findings, and saved design preferences guide this conceptual render."
+                                    : "Uses the original fixed-prompt image-generation pipeline. Baseline behavior is unchanged."}
+                            </p>
+                        </div>
+                        {project.generationMode === "enhanced" ? (
+                            <EnhancedGenerationReadiness
+                                project={project}
+                                isOwner={canGenerateProject}
+                                isProcessing={isProcessing}
+                                onGenerate={() => void runGeneration(project)}
+                            />
+                        ) : (
+                            <>
+                            <p className="generation-workflow-state" role="status">
+                                {project.generationMetadata?.generationStatus === "complete"
+                                    ? "Baseline render complete."
+                                    : isGenerationInProgress(project.generationMetadata)
+                                        ? "Baseline generation is in progress in another session."
+                                    : project.generationMetadata?.generationStatus === "failed"
+                                        ? "The last baseline request failed. Use Retry generation above."
+                                        : "Baseline projects render automatically when opened by their owner."}
+                            </p>
+                            {canGenerateProject &&
+                                !project.renderedImage &&
+                                (project.generationMetadata?.generationStatus === "failed" ||
+                                    (project.generationMetadata?.generationStatus === "generating" &&
+                                        !isGenerationInProgress(project.generationMetadata))) && (
+                                    <Button
+                                        size="sm"
+                                        onClick={() => void runGeneration(project)}
+                                        disabled={isProcessing}
+                                    >
+                                        Retry baseline generation
+                                    </Button>
+                                )}
+                            </>
+                        )}
+                        <p className="generation-workflow-disclaimer">
+                            Generated images are conceptual visualizations, not verified CAD or BIM geometry.
+                            Prompting does not guarantee exact structural fidelity.
+                        </p>
+                    </section>
+                )}
 
                 {project && (
                     <FloorPlanAnalysisPanel
@@ -454,4 +634,75 @@ const VisualizerId = () => {
        
     )
 }
-export default VisualizerId
+
+const EnhancedGenerationReadiness = ({
+    project,
+    isOwner,
+    isProcessing,
+    onGenerate,
+}: {
+    project: DesignItem;
+    isOwner: boolean;
+    isProcessing: boolean;
+    onGenerate: () => void;
+}) => {
+    const readiness = getEnhancedGenerationReadiness(
+        project.floorPlanAnalysis,
+        project.renderConfiguration,
+        isOwner,
+        Boolean(project.renderedImage),
+    );
+    const configuration = isRenderConfiguration(project.renderConfiguration)
+        ? project.renderConfiguration
+        : null;
+    const status = isProcessing
+        ? "Generation in progress."
+        : isGenerationInProgress(project.generationMetadata)
+            ? "Generation is in progress in another session."
+        : project.generationMetadata?.generationStatus === "failed"
+            ? "The previous enhanced request failed. Resolve any errors and retry."
+            : project.generationMetadata?.generationStatus === "complete"
+                ? "Enhanced render complete."
+                : readiness.ready
+                    ? "Ready to generate."
+                    : "Not ready to generate.";
+
+    return (
+        <div className="generation-readiness">
+            <p className="generation-workflow-state" role="status">{status}</p>
+            <p>
+                Floor-plan analysis: {readiness.missingPrerequisites.includes(
+                    "Analyze and approve the floor-plan findings.",
+                ) ? "Not approved" : "Approved"}
+            </p>
+            <p>
+                Saved architectural style: {configuration?.architecturalStyle ?? "No valid saved settings"}
+            </p>
+            {!readiness.ready && (
+                <ul aria-label="Missing enhanced generation prerequisites">
+                    {readiness.missingPrerequisites.map((prerequisite) => (
+                        <li key={prerequisite}>{prerequisite}</li>
+                    ))}
+                </ul>
+            )}
+            {isOwner && !project.renderedImage && (
+                <Button
+                    size="sm"
+                    onClick={onGenerate}
+                    disabled={!readiness.ready || isProcessing ||
+                        isGenerationInProgress(project.generationMetadata)}
+                >
+                    {isProcessing
+                        ? "Generating..."
+                        : isGenerationInProgress(project.generationMetadata)
+                            ? "Generation in progress"
+                        : project.generationMetadata?.generationStatus === "failed"
+                            ? "Retry enhanced generation"
+                            : "Start enhanced generation"}
+                </Button>
+            )}
+        </div>
+    );
+};
+
+export default VisualizerId;

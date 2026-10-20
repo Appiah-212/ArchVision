@@ -6,6 +6,8 @@ import Upload from "../../components/Upload";
 import { useNavigate } from "react-router";
 import { useEffect, useRef, useState } from "react";
 import { createProject, getProjects } from "../../lib/puter.action";
+import type { GenerationMode } from "../../lib/generation-types";
+import GenerationModeSelector from "../../components/GenerationModeSelector";
 
 
 
@@ -19,7 +21,10 @@ export function meta({}: Route.MetaArgs) {
 export default function Home() {
   const navigate = useNavigate();
   const [projects, setProjects] = useState<DesignItem[]>([]);
+  const [generationMode, setGenerationMode] = useState<GenerationMode>("baseline");
   const isCreatingProjectRef = useRef(false);
+  const generationModeRef = useRef(generationMode);
+  generationModeRef.current = generationMode;
 
   const handleUploadComplete = async (file: File) => {
     try {
@@ -38,6 +43,7 @@ export default function Home() {
       sourceFile: file,
       renderedImage: undefined,
       timestamp: Date.now(),
+      generationMode: generationModeRef.current,
     } satisfies DesignItem;
 
 
@@ -114,7 +120,8 @@ console.info(
           <div className="grid-overlay"/>
 
             <div className="upload-card">
-              <div className="upload-head">
+                <GenerationModeSelector value={generationMode} onChange={setGenerationMode} />
+                <div className="upload-head">
                 <div className="upload-icon">
                   <Layers className="icon"/>
 

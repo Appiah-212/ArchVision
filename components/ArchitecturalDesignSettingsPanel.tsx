@@ -150,8 +150,8 @@ const ArchitecturalDesignSettingsPanel = ({
                     <p className="design-settings-eyebrow">Aesthetic configuration</p>
                     <h2 id="design-settings-title">Architectural design settings</h2>
                     <p>
-                        Set preferences for a future enhanced renderer. These settings do not change
-                        the approved floor-plan interpretation or current baseline renderer.
+                        Set visual preferences for enhanced generation. Structural findings remain
+                        separate and take precedence over aesthetic preferences.
                     </p>
                 </div>
                 {isOwner && (
@@ -181,8 +181,8 @@ const ArchitecturalDesignSettingsPanel = ({
 
             <div className="design-settings-body">
                 <p className="design-settings-notice">
-                    Phase 2.2 saves your preferences only. The existing conceptual image generator
-                    remains unchanged; these controls are prepared for Phase 2.3.
+                    Preferences are used only when Enhanced generation is selected. Baseline
+                    generation continues to use its original fixed prompt.
                 </p>
                 <p className="design-settings-state" role="status">
                     {hasChanges
@@ -281,10 +281,10 @@ const ArchitecturalDesignSettingsPanel = ({
                         value={draft.customInstructions}
                         maxLength={500}
                         disabled={!isOwner || isSaving}
-                        placeholder="Optional visual preferences for a future enhanced renderer."
+                        placeholder="Optional visual preferences for the enhanced visualization."
                         onChange={(event) => update("customInstructions", event.target.value)}
                     />
-                    <span>{draft.customInstructions.length}/500 characters. Stored as user preferences; not sent to the current renderer.</span>
+                    <span>{draft.customInstructions.length}/500 characters. Sent as untrusted visual guidance only for Enhanced generation.</span>
                 </label>
                 <p className="design-structure-note">
                     Structural observations (rooms, walls, doors, windows, relationships, and

@@ -592,6 +592,38 @@
         }
     }
 
+    .generation-workflow {
+        @apply flex flex-col gap-4 rounded-xl border border-orange-200 bg-orange-50/70 p-5 shadow-sm;
+
+        h2 {
+            @apply text-2xl font-serif font-bold text-zinc-900;
+        }
+
+        p {
+            @apply text-sm leading-relaxed text-zinc-600;
+        }
+
+        .generation-workflow-eyebrow {
+            @apply font-mono text-xs uppercase tracking-widest text-orange-700;
+        }
+
+        .generation-workflow-state {
+            @apply font-semibold text-zinc-800;
+        }
+
+        .generation-readiness {
+            @apply flex flex-col items-start gap-2;
+
+            ul {
+                @apply list-disc pl-5 text-sm leading-relaxed text-amber-800;
+            }
+        }
+
+        .generation-workflow-disclaimer {
+            @apply border-t border-orange-200 pt-3 text-xs;
+        }
+    }
+
     .home {
         @apply min-h-screen bg-background relative overflow-x-hidden text-foreground;
 
@@ -653,6 +685,38 @@
 
                 .upload-card {
                     @apply relative w-full max-w-xl bg-white rounded-2xl shadow-xl overflow-hidden border border-zinc-100 p-8 z-10 transition-transform hover:scale-[1.01] duration-500;
+
+                    .generation-mode-selector {
+                        @apply mb-6 flex flex-col gap-3 border-0 p-0 text-left;
+
+                        legend {
+                            @apply mb-3 text-xs font-mono uppercase tracking-widest text-zinc-500;
+                        }
+
+                        label {
+                            @apply flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-200 p-3 text-sm transition-colors hover:border-orange-300;
+
+                            &:has(input:checked) {
+                                @apply border-orange-400 bg-orange-50;
+                            }
+
+                            input {
+                                @apply mt-1 accent-orange-600;
+                            }
+
+                            span {
+                                @apply flex flex-col gap-1;
+                            }
+
+                            strong {
+                                @apply text-sm font-semibold text-zinc-900;
+                            }
+
+                            small {
+                                @apply text-xs leading-relaxed text-zinc-500;
+                            }
+                        }
+                    }
 
                     .upload-head {
                         @apply text-center mb-6;
