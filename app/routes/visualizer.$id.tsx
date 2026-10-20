@@ -13,8 +13,10 @@ import {
     commitRenderVersion,
     deleteUncommittedRenderVersionAsset,
     getProjectById,
+    getFidelityEvaluations,
     markProjectGenerationFailed,
     saveFloorPlanAnalysis,
+    saveFidelityEvaluation,
     saveRenderConfiguration,
     shareProject,
     setActiveRenderVersion,
@@ -28,6 +30,8 @@ import ArchitecturalDesignSettingsPanel from "../../components/ArchitecturalDesi
 import GenerationModeSelector from "../../components/GenerationModeSelector";
 import RenderComparisonPanel from "../../components/RenderComparisonPanel";
 import RenderHistoryPanel from "../../components/RenderHistoryPanel";
+import StructuralFidelityPanel from "../../components/StructuralFidelityPanel";
+import type { FidelityEvaluation } from "../../lib/fidelity-evaluation";
 import type { RenderConfiguration } from "../../lib/render-configuration";
 import { isRenderConfiguration } from "../../lib/render-configuration";
 import {
@@ -63,6 +67,8 @@ const VisualizerId = () => {
         useState<GenerationMode>("baseline");
     const [isVersionSaving, setIsVersionSaving] = useState(false);
     const [versionMessage, setVersionMessage] = useState("");
+    const [fidelityEvaluations, setFidelityEvaluations] = useState<FidelityEvaluation[]>([]);
+    const [fidelityLoadError, setFidelityLoadError] = useState<string | null>(null);
     const [isVersionMessageError, setIsVersionMessageError] = useState(false);
     const canGenerateProject = Boolean(
         project?.ownerId && userId && project.ownerId === userId,
@@ -116,6 +122,14 @@ const VisualizerId = () => {
             ? { ...current, renderConfiguration: savedConfiguration }
             : current);
         return savedConfiguration;
+    };
+
+    const handleSaveFidelityEvaluation = async (evaluation: FidelityEvaluation, revisionOf?: string) => {
+        if (!id || !canGenerateProject) throw new Error("Only the project owner can save fidelity assessments.");
+        const payload = revisionOf ? { ...evaluation, revisionOf } : evaluation;
+        const saved = await saveFidelityEvaluation(id, payload);
+        setFidelityEvaluations((current) => current.some((item) => item.id === saved.id) ? current : [...current, saved]);
+        return saved;
     };
 
     const handleExport = async (
@@ -489,6 +503,23 @@ const VisualizerId = () => {
   }, [id]);
 
   useEffect(() => {
+    let isMounted = true;
+    setFidelityEvaluations([]);
+    setFidelityLoadError(null);
+    if (!id || !userId || project?.id !== id || project.ownerId !== userId) return () => { isMounted = false; };
+
+    getFidelityEvaluations(id).then((evaluations) => {
+      if (isMounted) setFidelityEvaluations(evaluations);
+    }).catch((error) => {
+      if (!isMounted) return;
+      console.error("Failed to load private fidelity assessments:", error);
+      setFidelityEvaluations([]);
+      setFidelityLoadError(error instanceof Error ? error.message : "Unable to reload saved evaluations.");
+    });
+    return () => { isMounted = false; };
+  }, [id, userId, project?.id, project?.ownerId]);
+
+  useEffect(() => {
     if (
       isProjectLoading ||
       hasInitialGenerated.current ||
@@ -724,6 +755,24 @@ const VisualizerId = () => {
                     versionImages={project?.renderVersionImages ?? {}}
                     selectedVersionId={selectedVersionId}
                 />
+
+                {project && renderVersions.length > 0 && (
+                    <StructuralFidelityPanel
+                        projectId={project.id}
+                        projectName={project.name || `Residence ${project.id}`}
+                        sourceImage={project.sourceImage}
+                        sourceImageReference={project.sourcePath || project.sourceImage}
+                        analysis={project.floorPlanAnalysis}
+                        versions={renderVersions}
+                        images={project.renderVersionImages ?? {}}
+                        selectedVersionId={selectedVersionId}
+                        evaluations={fidelityEvaluations}
+                        loadError={fidelityLoadError}
+                        reviewerIdentifier={userId || "owner"}
+                        isOwner={canGenerateProject}
+                        onSave={handleSaveFidelityEvaluation}
+                    />
+                )}
 
             </section>
            

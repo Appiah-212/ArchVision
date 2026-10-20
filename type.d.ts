@@ -35,6 +35,7 @@ interface DesignItem {
     renderVersions?: import("./lib/render-version").RenderVersion[];
     activeRenderVersionId?: string | null;
     renderVersionImages?: Record<string, string>;
+    fidelityEvaluations?: import("./lib/fidelity-evaluation").FidelityEvaluation[];
 }
 
 interface DesignConfig {

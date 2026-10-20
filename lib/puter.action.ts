@@ -13,6 +13,7 @@ import {
     type RenderVersion,
 } from "./render-version";
 import type { AuthorizedGenerationContext, GenerationMode } from "./generation-types";
+import { validateFidelityEvaluation, type FidelityEvaluation } from "./fidelity-evaluation";
 
 const PRIVATE_ASSET_PREFIX = "archvision_private_asset:";
 
@@ -533,6 +534,24 @@ export const saveRenderConfiguration = async (
         throw new Error(data.error || "Unable to save design settings");
     }
     return validateRenderConfiguration(data.configuration);
+};
+
+export const getFidelityEvaluations = async (id: string): Promise<FidelityEvaluation[]> => {
+    if (!PUTER_WORKER_URL) throw new Error("Fidelity assessments are unavailable: Worker URL is not configured");
+    const response = await puter.workers.exec(`${PUTER_WORKER_URL}/api/projects/fidelity-evaluations?id=${encodeURIComponent(id)}`, { method: "GET" });
+    const data = await response.json() as { evaluations?: unknown; error?: string };
+    if (!response.ok) throw new Error(data.error || "Unable to retrieve fidelity assessments");
+    if (!Array.isArray(data.evaluations)) throw new Error("The Worker returned invalid fidelity assessments");
+    return data.evaluations.map(validateFidelityEvaluation);
+};
+
+export const saveFidelityEvaluation = async (id: string, evaluation: FidelityEvaluation): Promise<FidelityEvaluation> => {
+    if (!PUTER_WORKER_URL) throw new Error("Fidelity assessments are unavailable: Worker URL is not configured");
+    const validEvaluation = validateFidelityEvaluation(evaluation);
+    const response = await puter.workers.exec(`${PUTER_WORKER_URL}/api/projects/fidelity-evaluations/save`, { method: "POST", body: JSON.stringify({ id, evaluation: validEvaluation }) });
+    const data = await response.json() as { evaluation?: unknown; error?: string };
+    if (!response.ok) throw new Error(data.error || "Unable to save fidelity assessment");
+    return validateFidelityEvaluation(data.evaluation);
 };
 
 export const createProject = async ({ item, visibility="private" }: CreateProjectParams):

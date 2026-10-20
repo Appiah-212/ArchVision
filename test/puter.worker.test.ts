@@ -158,6 +158,8 @@ const renderVersionUpdateHandler = handlers.get('POST /api/projects/render-versi
 const analysisAuthorizationHandler = handlers.get('POST /api/projects/floor-plan-analysis/authorize')!;
 const analysisSaveHandler = handlers.get('POST /api/projects/floor-plan-analysis/save')!;
 const renderConfigurationSaveHandler = handlers.get('POST /api/projects/render-configuration/save')!;
+const fidelityEvaluationsHandler = handlers.get('GET /api/projects/fidelity-evaluations')!;
+const fidelityEvaluationSaveHandler = handlers.get('POST /api/projects/fidelity-evaluations/save')!;
 const shareHandler = handlers.get('POST /api/projects/share')!;
 const unshareHandler = handlers.get('POST /api/projects/unshare')!;
 
@@ -197,6 +199,71 @@ const createUserPuter = (uuid: string) => ({
   auth: { getUser: vi.fn().mockResolvedValue({ uuid }) },
   fs: { delete: vi.fn() },
   kv: { del: vi.fn(), get: vi.fn(), set: vi.fn() },
+});
+
+describe('private fidelity assessment persistence', () => {
+  const sourceImage = 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png';
+  const version = {
+    id: '123e4567-e89b-12d3-a456-426614174001', projectId: 'plan-1', versionNumber: 1,
+    imageAssetReference: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174002.png',
+    generationMode: 'baseline', modelIdentifier: 'gemini-3.1-flash-image-preview',
+    promptTemplateVersion: 'archvision-baseline-v1', configurationSnapshot: null,
+    approvedAnalysisRevision: null, createdAt: '2026-10-20T00:00:00.000Z',
+    generationStatus: 'complete',
+  };
+  const evaluation = {
+    id: '123e4567-e89b-12d3-a456-426614174003', projectId: 'plan-1', renderVersionId: version.id,
+    sourceImageReference: sourceImage, approvedAnalysisRevision: null,
+    generationProvenance: { versionNumber: 1, generationMode: 'baseline', modelIdentifier: 'gemini-3.1-flash-image-preview', promptTemplateVersion: 'archvision-baseline-v1', configurationSnapshot: null, renderCreatedAt: '2026-10-20T00:00:00.000Z' },
+    rubricVersion: 'archvision-structural-fidelity-v1', evaluationMethod: 'HUMAN_REVIEW',
+    reviewerIdentifier: 'owner-1', createdAt: '2026-10-20T00:00:00.000Z', updatedAt: '2026-10-20T00:00:00.000Z',
+    criteria: [
+      ['room_count', 'Room count consistency'], ['room_function', 'Room function consistency'],
+      ['spatial_relationship', 'Spatial relationship consistency'], ['major_walls', 'Major wall arrangement'],
+      ['doors_windows', 'Door and window preservation'], ['missing_invented', 'Missing or invented features'],
+    ].map(([criterionId, label]) => ({ criterionId, label, rating: 'CANNOT_DETERMINE', reviewerNotes: '', supportingEvidence: [], confidenceOrVisibilityNotes: '' })),
+    overallScore: null, applicableCriteria: 0, unassessableCriteria: 6,
+    observations: [], discrepancies: [], limitations: [], status: 'INSUFFICIENT_EVIDENCE',
+  };
+  const project = { id: 'plan-1', ownerId: 'owner-1', sourceImage, renderedImage: version.imageAssetReference, renderVersions: [version], fidelityEvaluations: [] };
+
+  it('persists immutable evaluations and retrieves them only through owner-scoped access', async () => {
+    const owner = createUserPuter('owner-1'); owner.kv.get.mockResolvedValue(project);
+    const response = await fidelityEvaluationSaveHandler({ request: new Request('https://worker.example/api/projects/fidelity-evaluations/save', { method: 'POST', body: JSON.stringify({ id: 'plan-1', evaluation }) }), user: { puter: owner } });
+    expect(response.status).toBe(200);
+    expect(owner.kv.set).toHaveBeenCalledWith('archvision_project_owner-1_plan-1', expect.objectContaining({ fidelityEvaluations: [evaluation] }));
+    owner.kv.get.mockResolvedValue({ ...project, fidelityEvaluations: [evaluation] });
+    const retrieved = await fidelityEvaluationsHandler({ request: new Request('https://worker.example/api/projects/fidelity-evaluations?id=plan-1'), user: { puter: owner } });
+    await expect(retrieved.json()).resolves.toMatchObject({ evaluations: [evaluation] });
+    const duplicate = await fidelityEvaluationSaveHandler({ request: new Request('https://worker.example/api/projects/fidelity-evaluations/save', { method: 'POST', body: JSON.stringify({ id: 'plan-1', evaluation }) }), user: { puter: owner } });
+    expect(duplicate.status).toBe(409);
+  });
+
+  it('rejects cross-project render references and non-owner access', async () => {
+    const owner = createUserPuter('owner-1'); owner.kv.get.mockResolvedValue(project);
+    const foreign = { ...evaluation, id: '123e4567-e89b-12d3-a456-426614174004', renderVersionId: 'other-project-version' };
+    const rejected = await fidelityEvaluationSaveHandler({ request: new Request('https://worker.example/api/projects/fidelity-evaluations/save', { method: 'POST', body: JSON.stringify({ id: 'plan-1', evaluation: foreign }) }), user: { puter: owner } });
+    expect(rejected.status).toBe(400);
+    const stranger = createUserPuter('stranger'); stranger.kv.get.mockResolvedValue({ ...project, ownerId: 'owner-1' });
+    const denied = await fidelityEvaluationsHandler({ request: new Request('https://worker.example/api/projects/fidelity-evaluations?id=plan-1'), user: { puter: stranger } });
+    expect(denied.status).toBe(403);
+  });
+
+  it('retains retrieval when current render metadata is unavailable', async () => {
+    const owner = createUserPuter('owner-1');
+    owner.kv.get.mockResolvedValue({ ...project, renderedImage: null, renderVersions: [], fidelityEvaluations: [evaluation] });
+    const response = await fidelityEvaluationsHandler({ request: new Request('https://worker.example/api/projects/fidelity-evaluations?id=plan-1'), user: { puter: owner } });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ evaluations: [evaluation] });
+  });
+
+  it('does not expose persisted assessments in public project serialization', async () => {
+    const privateProject = { ...project, fidelityEvaluations: [evaluation] };
+    workerKv.get.mockResolvedValue({ ...privateProject, isPublic: true });
+    const response = await projectHandler({ request: new Request('https://worker.example/api/projects/get?id=plan-1') });
+    const body = await response.json() as { project?: Record<string, unknown> };
+    expect(body.project).not.toHaveProperty('fidelityEvaluations');
+  });
 });
 
 describe('Worker private project image access', () => {

@@ -187,6 +187,41 @@ Puter KV offers read/write operations without a compare-and-swap transaction for
 
 Both modes generate conceptual images from raster floor plans, not verified CAD/BIM geometry, construction documents, measured dimensions, or professional design advice. Image generation can omit or alter features even when structural constraints are supplied. The system records experimental conditions but does not fabricate experimental results or claim structural fidelity.
 
+## Phase 2.5 structural fidelity evaluation
+
+### Objective and scope
+
+Phase 2.5 adds a human-reviewed, rubric-based structural fidelity assessment for comparing a generated conceptual visualization with its original raster floor plan and the approved interpretation available to that render version. It does not calculate geometric accuracy and does not call the image generation model or another AI evaluator. The approved interpretation is a reference aid, not ground truth. Photorealism and visual attractiveness are not rubric criteria.
+
+**Architectural fidelity scores are research-oriented visual assessments. They do not establish geometric accuracy, building-code compliance, or engineering suitability.**
+
+### Rubric and scoring
+
+Rubric `archvision-structural-fidelity-v1` applies the same six equally weighted criteria to baseline and enhanced renders:
+
+1. Room count consistency
+2. Room function consistency
+3. Spatial relationship consistency
+4. Major wall arrangement
+5. Door and window preservation
+6. Missing or invented features
+
+For each criterion, reviewers select `PRESERVED` (2), `PARTIALLY_PRESERVED` (1), `NOT_PRESERVED` (0), or `CANNOT_DETERMINE` (excluded). The score is `sum of awarded points / (2 × applicable criteria) × 100`. The panel displays applicable and unassessable counts. With zero applicable criteria, it reports `INSUFFICIENT_EVIDENCE` and no numeric score. The number of applicable criteria out of six is the score coverage. Reviewers can record evidence, visibility uncertainty, observations, discrepancies, and limitations. The result is a rubric-based structural fidelity assessment, not objectively verified architectural accuracy.
+
+### Records, workflow, and version association
+
+`FidelityEvaluation` and `FidelityCriterion` are defined and runtime-validated in `lib/fidelity-evaluation.ts`. Each record includes its project and exact `renderVersionId`, source-image asset reference, approved-analysis revision/snapshot, generation mode/model/prompt/configuration/version-time snapshot, rubric/method, reviewer identifier, timestamps, six criteria, computed score/counts/status, observations, discrepancies, limitations, and optional `revisionOf` link. The Worker recalculates score fields and verifies the evaluation's project, version, generation provenance, and source reference at save time. Later version metadata changes do not erase the stored provenance or prevent retrieval. A correction is saved as a new evaluation with a new ID and a link to the prior record; stored evaluations are not overwritten. Active-render changes do not alter these associations.
+
+In the visualizer, select a render version, inspect the original plan and that version's image/comparison, consult its saved approved-analysis snapshot when available, complete the rubric, and save. Prior records for that version can be reopened. For blinded review, use a study code as the reviewer identifier and avoid exposing mode metadata during the review session. The interface itself displays mode and metadata, so operational blinding requires a separate controlled review procedure. Reviewer identifiers support later agreement analysis; statistical benchmarking belongs to Phase 2.6.
+
+### Privacy and export
+
+Assessments are stored inside the owner's private project KV record. The authenticated Worker checks ownership on retrieval and save, and verifies that a referenced render version belongs to the same project. Public-project serialization excludes assessments; sharing a render does not publish its assessments. The existing private asset authorization remains responsible for displaying source and render images. Exports are generated in the browser from validated records: each prior assessment offers a JSON report (including generation metadata/configuration snapshot and rubric) and a CSV of ratings, notes, evidence, score, and coverage. Exports contain reviewer comments and should be handled as private research data.
+
+### Research limitations and Phase 2.6 preparation
+
+Use the same source plan and rubric version for controlled baseline/enhanced comparisons, retain all cannot-determine outcomes, and do not presume enhanced results score higher. Perspective may hide features; unobservable criteria are excluded instead of penalized. Legacy versions without an approved-analysis snapshot remain evaluable, but their missing reference is recorded as a limitation. Human judgments can vary between reviewers; records retain reviewer IDs and criterion-level evidence to support later agreement analysis. The current milestone does not provide blinded mode masking, statistical analysis, or research outcome claims. Phase 2.6 can build on these version-specific records to run controlled comparisons and agreement statistics.
+
 ---
 
 Built with ❤️ using React Router.
