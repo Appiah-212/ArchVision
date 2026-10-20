@@ -13,12 +13,19 @@ export interface GenerationMetadata {
     generationTimestamp: string;
     generationStatus: GenerationStatus;
     generationLatencyMs?: number;
+    versionId?: string;
+    versionNumber?: number;
 }
 
 export interface AuthorizedGenerationContext {
     generationMode: GenerationMode;
     generationTimestamp: string;
     approvedAnalysisRevision: number | null;
+    versionId: string;
+    versionNumber: number;
+    traceabilityAnalysisRevision: number | null;
+    traceabilityAnalysis?: FloorPlanAnalysis;
+    traceabilityConfiguration?: RenderConfiguration;
     analysis?: FloorPlanAnalysis;
     configuration?: RenderConfiguration;
 }

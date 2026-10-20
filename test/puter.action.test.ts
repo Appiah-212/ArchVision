@@ -38,6 +38,7 @@ import {
   markProjectGenerationFailed,
   saveRenderConfiguration,
   saveFloorPlanAnalysis,
+  shareProject,
 } from '../lib/puter.action';
 import type { FloorPlanAnalysis } from '../lib/floor-plan-analysis';
 import {
@@ -113,7 +114,12 @@ describe('public project retrieval', () => {
 
     const result = await getProjectById({ id: project.id });
 
-    expect(result).toEqual(project);
+    expect(result).toMatchObject(project);
+    expect(result).toMatchObject({
+      activeRenderVersionId: null,
+      renderVersions: [],
+      renderVersionImages: {},
+    });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(exec).toHaveBeenCalledOnce();
   });
@@ -145,8 +151,8 @@ describe('public project retrieval', () => {
       }
       throw new Error(`Unexpected Worker request: ${url}`);
     });
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const result = await getProjectById({ id: 'private-project' });
 
     expect(result?.sourceImage).toMatch(/^blob:/);
@@ -157,6 +163,144 @@ describe('public project retrieval', () => {
     );
   });
 
+    it('reloads every retained private render version and resolves each image through its version ID', async () => {
+      getUser.mockResolvedValue({ uuid: 'owner-1' });
+      const versions = [
+        {
+          id: '123e4567-e89b-12d3-a456-426614174001',
+          projectId: 'private-project',
+          versionNumber: 1,
+          imageAssetReference: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174001.png',
+          generationMode: 'baseline',
+          modelIdentifier: 'gemini-3.1-flash-image-preview',
+          promptTemplateVersion: 'archvision-baseline-v1',
+          configurationSnapshot: null,
+          approvedAnalysisRevision: null,
+          createdAt: '2026-10-19T12:00:00.000Z',
+          generationStatus: 'complete',
+        },
+        {
+          id: '123e4567-e89b-12d3-a456-426614174002',
+          projectId: 'private-project',
+          versionNumber: 2,
+          imageAssetReference: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174002.png',
+          generationMode: 'baseline',
+          modelIdentifier: 'gemini-3.1-flash-image-preview',
+          promptTemplateVersion: 'archvision-baseline-v1',
+          configurationSnapshot: null,
+          approvedAnalysisRevision: null,
+          createdAt: '2026-10-20T12:00:00.000Z',
+          generationStatus: 'complete',
+        },
+      ];
+      exec.mockImplementation(async (url: string) => {
+        if (url.includes('/api/projects/get?')) {
+          return new Response(JSON.stringify({
+            project: {
+              id: 'private-project',
+              ownerId: 'owner-1',
+              sourceImage: 'https://example.com/source.png',
+              renderedImage: versions[1].imageAssetReference,
+              renderVersions: versions,
+              activeRenderVersionId: versions[1].id,
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/api/projects/private-asset?')) {
+          return new Response(new Blob(['active'], { type: 'image/png' }), { status: 200 });
+        }
+        if (url.includes('/api/projects/render-versions/asset?')) {
+          return new Response(new Blob([url.includes(versions[0].id) ? 'one' : 'two'], {
+            type: 'image/png',
+          }), { status: 200 });
+        }
+        throw new Error(`Unexpected Worker request: ${url}`);
+      });
+
+      const result = await getProjectById({ id: 'private-project' });
+
+      expect(result?.renderVersions?.map(({ versionNumber }) => versionNumber)).toEqual([1, 2]);
+      expect(result?.activeRenderVersionId).toBe(versions[1].id);
+      expect(result?.renderVersionImages?.[versions[0].id]).toMatch(/^blob:/);
+      expect(result?.renderVersionImages?.[versions[1].id]).toMatch(/^blob:/);
+      expect(exec.mock.calls.filter(([url]) =>
+        String(url).includes('/api/projects/render-versions/asset?'),
+      )).toHaveLength(2);
+    });
+
+    it('shares only the explicitly active version using a version-specific hosted path', async () => {
+      getUser.mockResolvedValue({ uuid: 'owner-1' });
+      getOrCreateHostingConfig.mockResolvedValue({ subdomain: 'archvision' });
+      const activeVersionId = '123e4567-e89b-12d3-a456-426614174002';
+      const privateProject = {
+        id: 'share-project',
+        ownerId: 'owner-1',
+        sourceImage: 'blob:source',
+        renderedImage: 'blob:active-render',
+        activeRenderVersionId: activeVersionId,
+        renderVersions: [{
+          id: activeVersionId,
+          projectId: 'share-project',
+          versionNumber: 2,
+          imageAssetReference: 'blob:active-render',
+          generationMode: 'baseline',
+          modelIdentifier: 'gemini-3.1-flash-image-preview',
+          promptTemplateVersion: 'archvision-baseline-v1',
+          configurationSnapshot: null,
+          approvedAnalysisRevision: null,
+          createdAt: '2026-10-20T12:00:00.000Z',
+          generationStatus: 'complete',
+        }],
+      };
+      uploadImageToHosting.mockImplementation(async (params: {
+        projectId: string;
+        label: 'source' | 'rendered';
+        assetSuffix?: string;
+      }) => {
+        const fileName = params.assetSuffix
+          ? `rendered-${params.assetSuffix}.png`
+          : `${params.label}.png`;
+        return {
+          url: `https://archvision.puter.site/projects/${params.projectId}/${fileName}`,
+          path: `projects/${params.projectId}/${fileName}`,
+        };
+      });
+      exec.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/api/projects/get?')) {
+          return new Response(JSON.stringify({ project: privateProject }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/api/projects/share')) {
+          const requestBody = JSON.parse(options?.body as string);
+          return new Response(JSON.stringify({
+            project: {
+              ...privateProject,
+              ...requestBody.publicAssets,
+              isPublic: true,
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        throw new Error(`Unexpected Worker request: ${url}`);
+      });
+
+      await shareProject(privateProject.id);
+
+      const uploadCalls = uploadImageToHosting.mock.calls.map(([params]) => params);
+      expect(uploadCalls).toContainEqual(expect.objectContaining({
+        label: 'rendered',
+        assetSuffix: activeVersionId,
+      }));
+      const shareRequest = JSON.parse(exec.mock.calls.find(([url]) =>
+        String(url).includes('/api/projects/share'),
+      )?.[1]?.body as string);
+      expect(shareRequest.renderVersionId).toBe(activeVersionId);
+      expect(shareRequest.publicAssets.renderVersionId).toBe(activeVersionId);
+      expect(shareRequest.publicAssetPaths).toContain(
+        `projects/share-project/rendered-${activeVersionId}.png`,
+      );
+    });
   it('returns no project for an anonymous private-project 404 without retrying the worker', async () => {
     const projectId = 'private-project';
     const fetchMock = vi.fn().mockResolvedValue(
@@ -225,6 +369,9 @@ describe('public project retrieval', () => {
       generationMode: 'baseline',
       generationTimestamp: '2026-10-20T00:00:00.000Z',
       approvedAnalysisRevision: null,
+      versionId: '123e4567-e89b-12d3-a456-426614174000',
+      versionNumber: 2,
+      traceabilityAnalysisRevision: null,
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -236,6 +383,9 @@ describe('public project retrieval', () => {
       generationMode: 'baseline',
       generationTimestamp: '2026-10-20T00:00:00.000Z',
       approvedAnalysisRevision: null,
+      versionId: '123e4567-e89b-12d3-a456-426614174000',
+      versionNumber: 2,
+      traceabilityAnalysisRevision: null,
     });
     expect(exec).toHaveBeenCalledWith(
       expect.stringContaining('/api/projects/generation/authorize'),
@@ -255,6 +405,11 @@ describe('public project retrieval', () => {
       generationMode: 'enhanced',
       generationTimestamp: '2026-10-20T00:00:00.000Z',
       approvedAnalysisRevision: 3,
+      versionId: '123e4567-e89b-12d3-a456-426614174000',
+      versionNumber: 1,
+      traceabilityAnalysisRevision: 3,
+      traceabilityAnalysis: approvedAnalysis,
+      traceabilityConfiguration: configuration,
       analysis: approvedAnalysis,
       configuration,
     }), {
@@ -262,11 +417,18 @@ describe('public project retrieval', () => {
       headers: { 'Content-Type': 'application/json' },
     }));
 
-    await expect(authorizeProjectGeneration('plan-1')).resolves.toMatchObject({
+    await expect(authorizeProjectGeneration('plan-1', 'enhanced')).resolves.toMatchObject({
       generationMode: 'enhanced',
       approvedAnalysisRevision: 3,
+      versionNumber: 1,
       analysis: approvedAnalysis,
       configuration,
+      traceabilityAnalysis: approvedAnalysis,
+      traceabilityConfiguration: configuration,
+    });
+    expect(JSON.parse(exec.mock.calls[0][1].body as string)).toEqual({
+      id: 'plan-1',
+      generationMode: 'enhanced',
     });
   });
 

@@ -13,6 +13,7 @@ const workerSource = readFileSync(
 const handlers = new Map<string, WorkerHandler>();
 const privateImage = new Blob(['confidential plan'], { type: 'image/png' });
 const workerFs = {
+  delete: vi.fn(),
   read: vi.fn(),
   write: vi.fn(),
 };
@@ -148,6 +149,12 @@ const projectHandler = handlers.get('GET /api/projects/get')!;
 const saveHandler = handlers.get('POST /api/projects/save')!;
 const generationHandler = handlers.get('POST /api/projects/generation/authorize')!;
 const generationFailureHandler = handlers.get('POST /api/projects/generation/fail')!;
+const renderVersionAssetHandler = handlers.get('POST /api/projects/render-versions/asset')!;
+const renderVersionCleanupHandler = handlers.get('POST /api/projects/render-versions/asset/delete')!;
+const renderVersionCommitHandler = handlers.get('POST /api/projects/render-versions/commit')!;
+const renderVersionImageHandler = handlers.get('GET /api/projects/render-versions/asset')!;
+const renderVersionActiveHandler = handlers.get('POST /api/projects/render-versions/active')!;
+const renderVersionUpdateHandler = handlers.get('POST /api/projects/render-versions/update')!;
 const analysisAuthorizationHandler = handlers.get('POST /api/projects/floor-plan-analysis/authorize')!;
 const analysisSaveHandler = handlers.get('POST /api/projects/floor-plan-analysis/save')!;
 const renderConfigurationSaveHandler = handlers.get('POST /api/projects/render-configuration/save')!;
@@ -645,13 +652,16 @@ describe('Worker private project image access', () => {
 
     const authorizationBody = await response.clone().json();
     expect(response.status, JSON.stringify(authorizationBody)).toBe(200);
-    await expect(response.json()).resolves.toEqual({
+    await expect(response.json()).resolves.toMatchObject({
       authorized: true,
       limit: 20,
       remaining: 19,
       generationMode: 'baseline',
       generationTimestamp: expect.any(String),
       approvedAnalysisRevision: null,
+      versionId: expect.stringMatching(/^[a-f0-9-]{36}$/i),
+      versionNumber: 1,
+      traceabilityAnalysisRevision: null,
     });
     expect(workerKv.incr).toHaveBeenCalledWith(
       expect.stringMatching(/^archvision_ai_generation:owner-1:\d{4}-\d{2}-\d{2}$/),
@@ -1105,6 +1115,527 @@ describe('Worker private project image access', () => {
     await expect(response.json()).resolves.toMatchObject({
       error: 'Failed to save design settings',
       message: 'KV unavailable',
+    });
+  });
+
+  describe('Worker render version lifecycle', () => {
+    const versionId = '123e4567-e89b-12d3-a456-426614174002';
+    const priorVersionId = '123e4567-e89b-12d3-a456-426614174001';
+    const generationTimestamp = '2026-10-20T12:00:00.000Z';
+    const priorAsset = 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174003.png';
+    const newAsset = `archvision_private_asset:${versionId}.png`;
+    const priorVersion = {
+      id: priorVersionId,
+      projectId: 'plan-1',
+      versionNumber: 1,
+      imageAssetReference: priorAsset,
+      generationMode: 'baseline',
+      modelIdentifier: 'gemini-3.1-flash-image-preview',
+      promptTemplateVersion: 'archvision-baseline-v1',
+      configurationSnapshot: null,
+      approvedAnalysisRevision: null,
+      createdAt: '2026-10-19T12:00:00.000Z',
+      generationStatus: 'complete',
+    };
+    const activeMetadata = {
+      generationMode: 'enhanced',
+      modelIdentifier: 'gemini-3.1-flash-image-preview',
+      promptTemplateVersion: 'archvision-enhanced-v1',
+      configurationSnapshot: renderConfiguration,
+      approvedAnalysisRevision: 1,
+      generationTimestamp,
+      generationStatus: 'generating',
+      versionId,
+      versionNumber: 2,
+    };
+    const projectDuringGeneration = () => ({
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      isPublic: false,
+      generationMode: 'baseline',
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+      renderedImage: priorAsset,
+      renderedPath: priorAsset,
+      renderVersions: [priorVersion],
+      activeRenderVersionId: priorVersionId,
+      floorPlanAnalysis: approvedAnalysis,
+      approvedAnalysisRevision: 1,
+      renderConfiguration,
+      generationMetadata: activeMetadata,
+      activeGenerationContext: {
+        versionId,
+        versionNumber: 2,
+        generationMode: 'enhanced',
+        generationTimestamp,
+        traceabilityAnalysisRevision: 1,
+        traceabilityAnalysis: approvedAnalysis,
+        traceabilityConfiguration: renderConfiguration,
+      },
+    });
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+      workerFs.read.mockResolvedValue(privateImage);
+      workerFs.write.mockResolvedValue(undefined);
+      workerFs.delete.mockResolvedValue(undefined);
+      workerKv.get.mockResolvedValue(null);
+      workerKv.incr.mockResolvedValue(1);
+      workerKv.expire.mockResolvedValue(true);
+    });
+
+    it('authorizes another selected mode on a project with a render and numbers it sequentially', async () => {
+      const owner = createUserPuter('owner-1');
+      owner.kv.get.mockResolvedValue({
+        ...projectDuringGeneration(),
+        generationMetadata: priorVersion,
+        activeGenerationContext: undefined,
+      });
+
+      const response = await generationHandler({
+        request: new Request('https://worker.example/api/projects/generation/authorize', {
+          method: 'POST',
+          body: JSON.stringify({ id: 'plan-1', generationMode: 'enhanced' }),
+        }),
+        user: { puter: owner },
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        generationMode: 'enhanced',
+        versionNumber: 2,
+        approvedAnalysisRevision: 1,
+        traceabilityAnalysisRevision: 1,
+        traceabilityAnalysis: approvedAnalysis,
+        traceabilityConfiguration: renderConfiguration,
+      });
+      expect(owner.kv.set).toHaveBeenCalledWith(
+        'archvision_project_owner-1_plan-1',
+        expect.objectContaining({
+          renderedImage: priorAsset,
+          renderVersions: [priorVersion],
+          activeGenerationContext: expect.objectContaining({
+            versionNumber: 2,
+            generationMode: 'enhanced',
+          }),
+        }),
+      );
+    });
+
+    it('stores a versioned private image only for the authorized owner run', async () => {
+      const owner = createUserPuter('owner-1');
+      owner.kv.get.mockResolvedValue(projectDuringGeneration());
+      const formData = new FormData();
+      formData.set('id', 'plan-1');
+      formData.set('versionId', versionId);
+      formData.set('generationTimestamp', generationTimestamp);
+      formData.set('file', new File(['render'], 'render.png', { type: 'image/png' }));
+
+      const uploadRequest = new Request('https://worker.example/api/projects/render-versions/asset', {
+        method: 'POST',
+      });
+      vi.spyOn(uploadRequest, 'formData').mockResolvedValue(formData);
+      const response = await renderVersionAssetHandler({
+        request: uploadRequest,
+        user: { puter: owner },
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ asset: newAsset });
+      expect(workerFs.write).toHaveBeenCalledWith(
+        `archvision_private_assets/owner-1/${versionId}.png`,
+        expect.anything(),
+        { createMissingParents: true },
+      );
+
+      const otherUser = createUserPuter('owner-2');
+      otherUser.kv.get.mockResolvedValue(projectDuringGeneration());
+      const rejectedRequest = new Request('https://worker.example/api/projects/render-versions/asset', {
+        method: 'POST',
+      });
+      vi.spyOn(rejectedRequest, 'formData').mockResolvedValue(formData);
+      const rejected = await renderVersionAssetHandler({
+        request: rejectedRequest,
+        user: { puter: otherUser },
+      });
+      expect(rejected.status).toBe(403);
+    });
+
+    it('commits a distinct enhanced version while preserving the previous successful render', async () => {
+      const owner = createUserPuter('owner-1');
+      owner.kv.get.mockResolvedValue(projectDuringGeneration());
+      const response = await renderVersionCommitHandler({
+        request: new Request('https://worker.example/api/projects/render-versions/commit', {
+          method: 'POST',
+          body: JSON.stringify({
+            id: 'plan-1',
+            versionId,
+            generationTimestamp,
+            imageAssetReference: newAsset,
+            generationLatencyMs: 4567,
+          }),
+        }),
+        user: { puter: owner },
+      });
+
+      expect(response.status, JSON.stringify(await response.clone().json())).toBe(200);
+      const result = await response.json();
+      expect(result.version).toMatchObject({
+        id: versionId,
+        projectId: 'plan-1',
+        versionNumber: 2,
+        imageAssetReference: newAsset,
+        generationMode: 'enhanced',
+        configurationSnapshot: renderConfiguration,
+        approvedAnalysisRevision: 1,
+        approvedAnalysisSnapshot: approvedAnalysis,
+        generationLatencyMs: 4567,
+        generationStatus: 'complete',
+      });
+      expect(result.project).toMatchObject({
+        renderedImage: newAsset,
+        renderedPath: newAsset,
+        activeRenderVersionId: versionId,
+        renderVersions: [priorVersion, result.version],
+        generationMetadata: {
+          generationStatus: 'complete',
+          versionId,
+          versionNumber: 2,
+        },
+      });
+    });
+
+    it('does not corrupt prior versions on failed KV commit and safely cleans uncommitted files', async () => {
+      const owner = createUserPuter('owner-1');
+      const activeProject = projectDuringGeneration();
+      owner.kv.get.mockResolvedValue(activeProject);
+      owner.kv.set.mockRejectedValueOnce(new Error('KV unavailable'));
+      const response = await renderVersionCommitHandler({
+        request: new Request('https://worker.example/api/projects/render-versions/commit', {
+          method: 'POST',
+          body: JSON.stringify({
+            id: 'plan-1',
+            versionId,
+            generationTimestamp,
+            imageAssetReference: newAsset,
+            generationLatencyMs: 1000,
+          }),
+        }),
+        user: { puter: owner },
+      });
+      expect(response.status).toBe(500);
+      expect(activeProject.renderedImage).toBe(priorAsset);
+
+      const cleanup = await renderVersionCleanupHandler({
+        request: new Request('https://worker.example/api/projects/render-versions/asset/delete', {
+          method: 'POST',
+          body: JSON.stringify({
+            id: 'plan-1',
+            versionId,
+            generationTimestamp,
+            imageAssetReference: newAsset,
+          }),
+        }),
+        user: { puter: owner },
+      });
+      expect(cleanup.status).toBe(200);
+      expect(workerFs.delete).toHaveBeenCalledWith(
+        `archvision_private_assets/owner-1/${versionId}.png`,
+      );
+    });
+
+    it('removes a partial image after filesystem persistence fails', async () => {
+      const owner = createUserPuter('owner-1');
+      owner.kv.get.mockResolvedValue(projectDuringGeneration());
+      workerFs.write.mockRejectedValueOnce(new Error('filesystem unavailable'));
+      const formData = new FormData();
+      formData.set('id', 'plan-1');
+      formData.set('versionId', versionId);
+      formData.set('generationTimestamp', generationTimestamp);
+      formData.set('file', new File(['render'], 'render.png', { type: 'image/png' }));
+
+      const uploadRequest = new Request('https://worker.example/api/projects/render-versions/asset', {
+        method: 'POST',
+      });
+      vi.spyOn(uploadRequest, 'formData').mockResolvedValue(formData);
+      const response = await renderVersionAssetHandler({
+        request: uploadRequest,
+        user: { puter: owner },
+      });
+      expect(response.status).toBe(500);
+      expect(workerFs.delete).toHaveBeenCalledWith(
+        `archvision_private_assets/owner-1/${versionId}.png`,
+      );
+    });
+
+    it('retrieves private images by authorized project and version identifiers only', async () => {
+      const owner = createUserPuter('owner-1');
+      owner.kv.get.mockResolvedValue({
+        ...projectDuringGeneration(),
+        renderVersions: [
+          priorVersion,
+          {
+            id: versionId,
+            projectId: 'plan-1',
+            versionNumber: 2,
+            imageAssetReference: newAsset,
+            generationMode: 'enhanced',
+            modelIdentifier: 'gemini-3.1-flash-image-preview',
+            promptTemplateVersion: 'archvision-enhanced-v1',
+            configurationSnapshot: renderConfiguration,
+            approvedAnalysisRevision: 1,
+            approvedAnalysisSnapshot: approvedAnalysis,
+            createdAt: generationTimestamp,
+            generationLatencyMs: 1000,
+            generationStatus: 'complete',
+          },
+        ],
+      });
+      const response = await renderVersionImageHandler({
+        request: new Request(`https://worker.example/api/projects/render-versions/asset?id=plan-1&versionId=${versionId}`),
+        user: { puter: owner },
+      });
+      expect(response.status).toBe(200);
+      expect(workerFs.read).toHaveBeenCalledWith(
+        `archvision_private_assets/owner-1/${versionId}.png`,
+      );
+
+      const manipulated = await renderVersionImageHandler({
+        request: new Request('https://worker.example/api/projects/render-versions/asset?id=other-plan&versionId=123e4567-e89b-12d3-a456-426614174002'),
+        user: { puter: owner },
+      });
+      expect(manipulated.status).toBe(404);
+    });
+
+    it('changes the active pointer and editable details without invoking generation', async () => {
+      const owner = createUserPuter('owner-1');
+      const project = {
+        ...projectDuringGeneration(),
+        renderVersions: [priorVersion],
+        generationMetadata: undefined,
+        activeGenerationContext: undefined,
+      };
+      owner.kv.get.mockResolvedValue(project);
+
+      const activeResponse = await renderVersionActiveHandler({
+        request: new Request('https://worker.example/api/projects/render-versions/active', {
+          method: 'POST',
+          body: JSON.stringify({ id: 'plan-1', versionId: priorVersionId }),
+        }),
+        user: { puter: owner },
+      });
+      expect(activeResponse.status).toBe(200);
+      await expect(activeResponse.json()).resolves.toMatchObject({
+        project: {
+          activeRenderVersionId: priorVersionId,
+          renderedImage: priorAsset,
+        },
+      });
+
+      const updateResponse = await renderVersionUpdateHandler({
+        request: new Request('https://worker.example/api/projects/render-versions/update', {
+          method: 'POST',
+          body: JSON.stringify({
+            id: 'plan-1',
+            versionId: priorVersionId,
+            name: 'First study',
+            notes: 'Initial conceptual comparison.',
+          }),
+        }),
+        user: { puter: owner },
+      });
+      expect(updateResponse.status).toBe(200);
+      await expect(updateResponse.json()).resolves.toMatchObject({
+        project: {
+          renderVersions: [{
+            ...priorVersion,
+            name: 'First study',
+            notes: 'Initial conceptual comparison.',
+          }],
+        },
+      });
+      expect(workerKv.incr).not.toHaveBeenCalled();
+    });
+
+    it('keeps render history and private research metadata out of public responses', async () => {
+      workerKv.get.mockResolvedValue({
+        id: 'plan-1',
+        ownerId: 'owner-1',
+        isPublic: true,
+        sourceImage: 'https://archvision.puter.site/projects/plan-1/source.png',
+        renderedImage: 'https://archvision.puter.site/projects/plan-1/rendered.png',
+        renderVersions: [priorVersion],
+        activeRenderVersionId: priorVersionId,
+        generationMetadata: activeMetadata,
+        floorPlanAnalysis: approvedAnalysis,
+        renderConfiguration,
+      });
+      const response = await projectHandler({
+        request: new Request('https://worker.example/api/projects/get?id=plan-1'),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.project).toMatchObject({
+        renderedImage: 'https://archvision.puter.site/projects/plan-1/rendered.png',
+      });
+      expect(body.project).not.toHaveProperty('renderVersions');
+      expect(body.project).not.toHaveProperty('activeRenderVersionId');
+      expect(body.project).not.toHaveProperty('generationMetadata');
+      expect(body.project).not.toHaveProperty('renderConfiguration');
+    });
+
+    it('publishes only the active version asset and excludes private history', async () => {
+      const owner = createUserPuter('owner-1');
+      const activeVersion = {
+        ...priorVersion,
+        id: versionId,
+        versionNumber: 2,
+        imageAssetReference: newAsset,
+        generationMode: 'enhanced',
+        promptTemplateVersion: 'archvision-enhanced-v1',
+        configurationSnapshot: renderConfiguration,
+        approvedAnalysisRevision: 1,
+        approvedAnalysisSnapshot: approvedAnalysis,
+      };
+      owner.kv.get.mockResolvedValue({
+        id: 'plan-1',
+        ownerId: 'owner-1',
+        isPublic: false,
+        sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+        renderedImage: newAsset,
+        renderedPath: newAsset,
+        renderVersions: [priorVersion, activeVersion],
+        activeRenderVersionId: versionId,
+      });
+      const publicRender = `https://images.puter.site/projects/plan-1/rendered-${versionId}.png`;
+      const requestBody = {
+        id: 'plan-1',
+        renderVersionId: versionId,
+        publicAssets: {
+          sourceImage: 'https://images.puter.site/projects/plan-1/source.png',
+          renderedImage: publicRender,
+          renderVersionId: versionId,
+        },
+        publicAssetPaths: [
+          'projects/plan-1/source.png',
+          `projects/plan-1/rendered-${versionId}.png`,
+        ],
+      };
+      const response = await shareHandler({
+        request: new Request('https://worker.example/api/projects/share', {
+          method: 'POST',
+          body: JSON.stringify(requestBody),
+        }),
+        user: { puter: owner },
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.project).toMatchObject({ renderedImage: publicRender });
+      expect(body.project).not.toHaveProperty('renderVersions');
+      expect(body.project).not.toHaveProperty('activeRenderVersionId');
+
+      workerKv.set.mockClear();
+      const rejected = await shareHandler({
+        request: new Request('https://worker.example/api/projects/share', {
+          method: 'POST',
+          body: JSON.stringify({ ...requestBody, renderVersionId: priorVersionId }),
+        }),
+        user: { puter: owner },
+      });
+      expect(rejected.status).toBe(409);
+      expect(workerKv.set).not.toHaveBeenCalled();
+    });
+
+    it('rejects additional historical render paths from the public asset list', async () => {
+      const owner = createUserPuter('owner-1');
+      owner.kv.get.mockResolvedValue({
+        id: 'plan-1',
+        ownerId: 'owner-1',
+        isPublic: false,
+        sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+        renderedImage: priorAsset,
+        renderVersions: [priorVersion],
+        activeRenderVersionId: priorVersionId,
+      });
+      const publicRender =
+        `https://images.puter.site/projects/plan-1/rendered-${priorVersionId}.png`;
+      const response = await shareHandler({
+        request: new Request('https://worker.example/api/projects/share', {
+          method: 'POST',
+          body: JSON.stringify({
+            id: 'plan-1',
+            renderVersionId: priorVersionId,
+            publicAssets: {
+              sourceImage: 'https://images.puter.site/projects/plan-1/source.png',
+              renderedImage: publicRender,
+              renderVersionId: priorVersionId,
+            },
+            publicAssetPaths: [
+              'projects/plan-1/source.png',
+              `projects/plan-1/rendered-${priorVersionId}.png`,
+              'projects/plan-1/rendered-older-version.png',
+            ],
+          }),
+        }),
+        user: { puter: owner },
+      });
+
+      expect(response.status).toBe(400);
+      expect(workerKv.set).not.toHaveBeenCalled();
+    });
+
+    it('revokes obsolete render assets when publishing a different active version', async () => {
+      const owner = createUserPuter('owner-1');
+      owner.kv.get.mockResolvedValue({
+        id: 'plan-1',
+        ownerId: 'owner-1',
+        isPublic: false,
+        sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+        renderedImage: priorAsset,
+        renderVersions: [priorVersion],
+        activeRenderVersionId: priorVersionId,
+      });
+      workerKv.get.mockResolvedValue({
+        id: 'plan-1',
+        ownerId: 'owner-1',
+        publicAssetPaths: [
+          'projects/plan-1/source.png',
+          'projects/plan-1/rendered-older-version.png',
+        ],
+      });
+      const publicRender =
+        `https://images.puter.site/projects/plan-1/rendered-${priorVersionId}.png`;
+      const response = await shareHandler({
+        request: new Request('https://worker.example/api/projects/share', {
+          method: 'POST',
+          body: JSON.stringify({
+            id: 'plan-1',
+            renderVersionId: priorVersionId,
+            publicAssets: {
+              sourceImage: 'https://images.puter.site/projects/plan-1/source.png',
+              renderedImage: publicRender,
+              renderVersionId: priorVersionId,
+            },
+            publicAssetPaths: [
+              'projects/plan-1/source.png',
+              `projects/plan-1/rendered-${priorVersionId}.png`,
+            ],
+          }),
+        }),
+        user: { puter: owner },
+      });
+
+      expect(response.status).toBe(200);
+      expect(owner.fs.delete).toHaveBeenCalledWith(
+        'projects/plan-1/rendered-older-version.png',
+      );
+      await expect(response.json()).resolves.toMatchObject({
+        project: {
+          publicAssetPaths: [
+            'projects/plan-1/source.png',
+            `projects/plan-1/rendered-${priorVersionId}.png`,
+          ],
+        },
+      });
     });
   });
 });

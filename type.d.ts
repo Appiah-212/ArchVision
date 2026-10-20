@@ -32,6 +32,9 @@ interface DesignItem {
     generationMode?: import("./lib/generation-types").GenerationMode;
     generationMetadata?: import("./lib/generation-types").GenerationMetadata;
     approvedAnalysisRevision?: number;
+    renderVersions?: import("./lib/render-version").RenderVersion[];
+    activeRenderVersionId?: string | null;
+    renderVersionImages?: Record<string, string>;
 }
 
 interface DesignConfig {
@@ -121,6 +124,7 @@ interface StoreHostedImageParams {
     url: string;
     projectId: string;
     label: "source" | "rendered";
+    assetSuffix?: string;
 }
 
 interface CreateProjectParams {

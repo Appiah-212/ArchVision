@@ -26,20 +26,27 @@ export const getOrCreateHostingConfig = async (): Promise<HostingConfig | null> 
     }
 }
 
-const writeBlobToHosting = async ({ hosting, blob, projectId, label, sourceUrl }: {
+const writeBlobToHosting = async ({ hosting, blob, projectId, label, sourceUrl, assetSuffix }: {
     hosting: HostingConfig | null;
     blob: Blob;
     projectId: string;
     label: "source" | "rendered";
     sourceUrl?: string;
+    assetSuffix?: string;
 }): Promise<HostedAsset | null> => {
     if (!hosting || !blob) return null;
+    if (assetSuffix !== undefined && !/^[A-Za-z0-9_-]{1,160}$/.test(assetSuffix)) {
+        throw new Error("The hosted render version identifier is invalid.");
+    }
 
     const contentType = blob.type || "";
     const ext = getImageExtension(contentType, sourceUrl || "");
     const dir = getProjectDirectory(projectId);
-    const filePath = `${dir}/${label}.${ext}`;
-    const uploadFile = new File([blob], `${label}.${ext}`, { type: contentType });
+    const fileName = label === "rendered" && assetSuffix
+        ? `rendered-${assetSuffix}.${ext}`
+        : `${label}.${ext}`;
+    const filePath = `${dir}/${fileName}`;
+    const uploadFile = new File([blob], fileName, { type: contentType });
 
     await puter.fs.mkdir(dir, { createMissingParents: true });
     await puter.fs.write(filePath, uploadFile);
@@ -65,7 +72,13 @@ export const uploadFileToHosting = async ({ hosting, file, projectId, label}: {
     });
 };
 
-export const uploadImageToHosting = async ({ hosting, url, projectId, label}: StoreHostedImageParams): Promise<HostedAsset | null> => {
+export const uploadImageToHosting = async ({
+    hosting,
+    url,
+    projectId,
+    label,
+    assetSuffix,
+}: StoreHostedImageParams): Promise<HostedAsset | null> => {
 
     if(!hosting || !url) return null;
 
@@ -83,6 +96,7 @@ export const uploadImageToHosting = async ({ hosting, url, projectId, label}: St
             projectId,
             label,
             sourceUrl: url,
+            assetSuffix,
         });
 
     } catch (e) {

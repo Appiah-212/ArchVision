@@ -7,6 +7,11 @@ import {
     validateRenderConfiguration,
     type RenderConfiguration,
 } from "./render-configuration";
+import {
+    getRenderVersions,
+    validateRenderVersion,
+    type RenderVersion,
+} from "./render-version";
 import type { AuthorizedGenerationContext, GenerationMode } from "./generation-types";
 
 const PRIVATE_ASSET_PREFIX = "archvision_private_asset:";
@@ -81,6 +86,7 @@ const resolvePrivateAsset = async (
 };
 
 const resolvePrivateProjectAssets = async (project: DesignItem): Promise<DesignItem> => {
+    const versions = getRenderVersions(project);
     const [sourceResult, renderedResult] = await Promise.allSettled([
         resolvePrivateAsset(project.sourceImage, project.id, "source"),
         resolvePrivateAsset(project.renderedImage, project.id, "rendered"),
@@ -97,6 +103,38 @@ const resolvePrivateProjectAssets = async (project: DesignItem): Promise<DesignI
         );
         renderedImage = null;
     }
+    const resolvedVersionImages = await Promise.all(versions.map(async (version) => {
+        if (version.isLegacy) {
+            return [version.id, renderedImage || project.renderedImage || ""] as const;
+        }
+        if (!version.imageAssetReference?.startsWith(PRIVATE_ASSET_PREFIX)) {
+            return [version.id, version.imageAssetReference || ""] as const;
+        }
+        try {
+            const response = await puter.workers.exec(
+                `${PUTER_WORKER_URL}/api/projects/render-versions/asset?id=${encodeURIComponent(project.id)}&versionId=${encodeURIComponent(version.id)}`,
+                { method: "GET" },
+            );
+            if (!response.ok) {
+                throw new Error(`Failed to retrieve private render version: ${await response.text()}`);
+            }
+            return [version.id, URL.createObjectURL(await response.blob())] as const;
+        } catch (error) {
+            console.warn(
+                `Private render version ${version.id} is unavailable for project ${project.id}.`,
+                error,
+            );
+            return [version.id, ""] as const;
+        }
+    }));
+    const versionImages = Object.fromEntries(
+        resolvedVersionImages.filter(([, image]) => Boolean(image)),
+    );
+    const activeRenderVersionId = versions.some(
+        ({ id }) => id === project.activeRenderVersionId,
+    )
+        ? project.activeRenderVersionId
+        : versions[versions.length - 1]?.id ?? null;
     return {
         ...project,
         sourceImage: sourceResult.value || "",
@@ -107,6 +145,9 @@ const resolvePrivateProjectAssets = async (project: DesignItem): Promise<DesignI
         ...(project.renderedImage?.startsWith(PRIVATE_ASSET_PREFIX)
             ? { renderedPath: project.renderedImage }
             : project.renderedPath ? { renderedPath: project.renderedPath } : {}),
+        renderVersions: versions,
+        activeRenderVersionId,
+        renderVersionImages: versionImages,
     };
 };
 
@@ -124,6 +165,7 @@ export const getCurrentUser = async () => {
 
 export const authorizeProjectGeneration = async (
     id: string,
+    generationMode?: GenerationMode,
 ): Promise<{ limit: number; remaining: number } & AuthorizedGenerationContext> => {
     if (!PUTER_WORKER_URL) throw new Error("AI generation is unavailable: Worker URL is not configured");
 
@@ -131,7 +173,7 @@ export const authorizeProjectGeneration = async (
         `${PUTER_WORKER_URL}/api/projects/generation/authorize`,
         {
             method: "POST",
-            body: JSON.stringify({ id }),
+            body: JSON.stringify({ id, ...(generationMode ? { generationMode } : {}) }),
         },
     );
     let data: {
@@ -141,6 +183,11 @@ export const authorizeProjectGeneration = async (
         generationMode?: GenerationMode;
         generationTimestamp?: string;
         approvedAnalysisRevision?: number | null;
+        versionId?: string;
+        versionNumber?: number;
+        traceabilityAnalysisRevision?: number | null;
+        traceabilityAnalysis?: unknown;
+        traceabilityConfiguration?: unknown;
         analysis?: unknown;
         configuration?: unknown;
         error?: string;
@@ -159,11 +206,26 @@ export const authorizeProjectGeneration = async (
         (data.generationMode !== "baseline" && data.generationMode !== "enhanced") ||
         typeof data.generationTimestamp !== "string" ||
         !Number.isFinite(Date.parse(data.generationTimestamp)) ||
+        typeof data.versionId !== "string" ||
+        !/^[a-f0-9-]{36}$/i.test(data.versionId) ||
+        !Number.isSafeInteger(data.versionNumber) ||
+        (data.versionNumber ?? 0) < 1 ||
         (data.approvedAnalysisRevision !== null &&
             (!Number.isSafeInteger(data.approvedAnalysisRevision) ||
                 (data.approvedAnalysisRevision ?? 0) < 1))) {
         throw new Error("The Worker returned an invalid generation authorization");
     }
+    if (data.traceabilityAnalysisRevision !== null &&
+        (!Number.isSafeInteger(data.traceabilityAnalysisRevision) ||
+            (data.traceabilityAnalysisRevision ?? 0) < 1)) {
+        throw new Error("The Worker returned an invalid analysis revision snapshot");
+    }
+    const traceabilityAnalysis = data.traceabilityAnalysis === undefined
+        ? undefined
+        : validateFloorPlanAnalysis(data.traceabilityAnalysis);
+    const traceabilityConfiguration = data.traceabilityConfiguration === undefined
+        ? undefined
+        : validateRenderConfiguration(data.traceabilityConfiguration);
     if (data.generationMode === "enhanced" &&
         (data.approvedAnalysisRevision === null || data.analysis === undefined ||
             data.configuration === undefined)) {
@@ -175,6 +237,11 @@ export const authorizeProjectGeneration = async (
         generationMode: data.generationMode,
         generationTimestamp: data.generationTimestamp,
         approvedAnalysisRevision: data.approvedAnalysisRevision ?? null,
+        versionId: data.versionId,
+        versionNumber: data.versionNumber!,
+        traceabilityAnalysisRevision: data.traceabilityAnalysisRevision ?? null,
+        ...(traceabilityAnalysis ? { traceabilityAnalysis } : {}),
+        ...(traceabilityConfiguration ? { traceabilityConfiguration } : {}),
         ...(data.generationMode === "enhanced"
             ? {
                 analysis: validateFloorPlanAnalysis(data.analysis),
@@ -200,6 +267,184 @@ export const markProjectGenerationFailed = async (
         const data = await response.json().catch(() => null) as { error?: string } | null;
         throw new Error(data?.error || "Unable to record the generation failure");
     }
+};
+
+export const uploadRenderVersionAsset = async ({
+    id,
+    versionId,
+    generationTimestamp,
+    image,
+}: {
+    id: string;
+    versionId: string;
+    generationTimestamp: string;
+    image: string;
+}): Promise<string> => {
+    if (!PUTER_WORKER_URL) throw new Error("Render version storage is unavailable: Worker URL is not configured");
+    const resolved = await fetchBlobFromUrl(image);
+    if (!resolved?.blob) throw new Error("The generated render image could not be read.");
+    const extension = getImageExtension(
+        resolved.contentType || resolved.blob.type,
+        image,
+    );
+    const expectedAsset = `${PRIVATE_ASSET_PREFIX}${versionId}.${extension}`;
+    const formData = new FormData();
+    formData.set("id", id);
+    formData.set("versionId", versionId);
+    formData.set("generationTimestamp", generationTimestamp);
+    formData.set(
+        "file",
+        new File([resolved.blob], `render.${extension}`, {
+            type: resolved.contentType || resolved.blob.type || "image/png",
+        }),
+    );
+    try {
+        const response = await puter.workers.exec(
+            `${PUTER_WORKER_URL}/api/projects/render-versions/asset`,
+            { method: "POST", body: formData },
+        );
+        let data: { asset?: string; error?: string };
+        try {
+            data = await response.json() as typeof data;
+        } catch {
+            throw new Error("The Worker returned an invalid render asset response");
+        }
+        if (!response.ok) throw new Error(data.error || "Failed to store render version image");
+        if (data.asset !== expectedAsset) {
+            throw new Error("The Worker returned an unexpected render image reference");
+        }
+        return data.asset;
+    } catch (error) {
+        try {
+            await deleteUncommittedRenderVersionAsset({
+                id,
+                versionId,
+                generationTimestamp,
+                imageAssetReference: expectedAsset,
+            });
+        } catch (cleanupError) {
+            console.error("Failed to clean up an uncommitted render asset:", cleanupError);
+        }
+        throw error;
+    }
+};
+
+export const deleteUncommittedRenderVersionAsset = async ({
+    id,
+    versionId,
+    generationTimestamp,
+    imageAssetReference,
+}: {
+    id: string;
+    versionId: string;
+    generationTimestamp: string;
+    imageAssetReference: string;
+}): Promise<void> => {
+    if (!PUTER_WORKER_URL) throw new Error("Render version storage is unavailable: Worker URL is not configured");
+    const response = await puter.workers.exec(
+        `${PUTER_WORKER_URL}/api/projects/render-versions/asset/delete`,
+        {
+            method: "POST",
+            body: JSON.stringify({
+                id,
+                versionId,
+                generationTimestamp,
+                imageAssetReference,
+            }),
+        },
+    );
+    if (!response.ok) {
+        const data = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(data?.error || "Failed to remove uncommitted render image");
+    }
+};
+
+export const commitRenderVersion = async ({
+    id,
+    versionId,
+    generationTimestamp,
+    imageAssetReference,
+    generationLatencyMs,
+}: {
+    id: string;
+    versionId: string;
+    generationTimestamp: string;
+    imageAssetReference: string;
+    generationLatencyMs: number;
+}): Promise<{ project: DesignItem; version: RenderVersion }> => {
+    if (!PUTER_WORKER_URL) throw new Error("Render version storage is unavailable: Worker URL is not configured");
+    const response = await puter.workers.exec(
+        `${PUTER_WORKER_URL}/api/projects/render-versions/commit`,
+        {
+            method: "POST",
+            body: JSON.stringify({
+                id,
+                versionId,
+                generationTimestamp,
+                imageAssetReference,
+                generationLatencyMs,
+            }),
+        },
+    );
+    let data: { project?: DesignItem; version?: unknown; error?: string };
+    try {
+        data = await response.json() as typeof data;
+    } catch {
+        throw new Error("The Worker returned an invalid render version response");
+    }
+    if (!response.ok) throw new Error(data.error || "Failed to save render version metadata");
+    if (!data.project || !data.version) {
+        throw new Error("The Worker did not return the saved render version");
+    }
+    const version = validateRenderVersion(data.version);
+    if (version.projectId !== id || version.id !== versionId) {
+        throw new Error("The Worker returned a render version for a different project");
+    }
+    return {
+        project: await resolvePrivateProjectAssets(data.project),
+        version,
+    };
+};
+
+export const setActiveRenderVersion = async (
+    id: string,
+    versionId: string,
+): Promise<DesignItem> => {
+    if (!PUTER_WORKER_URL) throw new Error("Render version storage is unavailable: Worker URL is not configured");
+    const response = await puter.workers.exec(
+        `${PUTER_WORKER_URL}/api/projects/render-versions/active`,
+        { method: "POST", body: JSON.stringify({ id, versionId }) },
+    );
+    let data: { project?: DesignItem; error?: string };
+    try {
+        data = await response.json() as typeof data;
+    } catch {
+        throw new Error("The Worker returned an invalid active render response");
+    }
+    if (!response.ok) throw new Error(data.error || "Failed to select active render version");
+    if (!data.project) throw new Error("The Worker did not return the updated project");
+    return resolvePrivateProjectAssets(data.project);
+};
+
+export const updateRenderVersionDetails = async (
+    id: string,
+    versionId: string,
+    details: { name: string; notes: string },
+): Promise<DesignItem> => {
+    if (!PUTER_WORKER_URL) throw new Error("Render version storage is unavailable: Worker URL is not configured");
+    const response = await puter.workers.exec(
+        `${PUTER_WORKER_URL}/api/projects/render-versions/update`,
+        { method: "POST", body: JSON.stringify({ id, versionId, ...details }) },
+    );
+    let data: { project?: DesignItem; error?: string };
+    try {
+        data = await response.json() as typeof data;
+    } catch {
+        throw new Error("The Worker returned an invalid render details response");
+    }
+    if (!response.ok) throw new Error(data.error || "Failed to update render version details");
+    if (!data.project) throw new Error("The Worker did not return the updated project");
+    return resolvePrivateProjectAssets(data.project);
 };
 
 export const authorizeFloorPlanAnalysis = async (
@@ -353,16 +598,22 @@ export const createProject = async ({ item, visibility="private" }: CreateProjec
             publicPath: _publicPath,
             sourceFile: _sourceFile,
             renderedFile: _renderedFile,
+            renderVersionImages: _renderVersionImages,
             ...rest
         } = item;
+        const {
+            renderVersions: _renderVersions,
+            activeRenderVersionId: _activeRenderVersionId,
+            ...persistedFields
+        } = rest;
         const payload = {
-            ...rest,
+            ...persistedFields,
             sourceImage: resolvedSource,
             renderedImage: resolvedRender,
         };
         const privateProject = visibility === "public"
             ? {
-                ...rest,
+                ...persistedFields,
                 sourceImage: existingSourceRef ?? await uploadPrivateAsset({
                     id: projectId,
                     label: "source",
@@ -476,6 +727,7 @@ const updateProjectSharing = async (
         sourceImage: string;
         renderedImage?: string;
         paths: string[];
+        renderVersionId?: string;
     },
 ): Promise<DesignItem> => {
     if (!PUTER_WORKER_URL) {
@@ -490,6 +742,7 @@ const updateProjectSharing = async (
                 id,
                 publicAssets,
                 publicAssetPaths: publicAssets?.paths,
+                renderVersionId: publicAssets?.renderVersionId,
             }),
         },
     );
@@ -513,6 +766,10 @@ export const shareProject = async (id: string): Promise<DesignItem> => {
 
     const hosting = await getOrCreateHostingConfig();
     const assets: HostedAsset[] = [];
+    const versions = getRenderVersions(project);
+    const activeVersion = versions.find(
+        ({ id: versionId }) => versionId === project.activeRenderVersionId,
+    ) ?? versions[versions.length - 1];
 
     try {
         const source = await uploadImageToHosting({
@@ -530,10 +787,14 @@ export const shareProject = async (id: string): Promise<DesignItem> => {
                 url: project.renderedImage,
                 projectId: id,
                 label: "rendered",
+                ...(activeVersion ? { assetSuffix: activeVersion.id } : {}),
             })
             : null;
         if (project.renderedImage && !rendered) {
             throw new Error("Failed to publish the rendered image");
+        }
+        if (project.renderedImage && !activeVersion) {
+            throw new Error("The active render version could not be verified");
         }
         if (rendered) assets.push(rendered);
 
@@ -541,6 +802,7 @@ export const shareProject = async (id: string): Promise<DesignItem> => {
             sourceImage: source.url,
             renderedImage: rendered?.url,
             paths: assets.map(({ path }) => path),
+            ...(activeVersion ? { renderVersionId: activeVersion.id } : {}),
         });
     } catch (error) {
         for (const asset of assets) {

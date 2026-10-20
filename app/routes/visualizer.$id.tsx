@@ -10,18 +10,24 @@ import Button from "../../components/ui/button";
 import {
     authorizeFloorPlanAnalysis,
     authorizeProjectGeneration,
-    createProject,
+    commitRenderVersion,
+    deleteUncommittedRenderVersionAsset,
     getProjectById,
     markProjectGenerationFailed,
     saveFloorPlanAnalysis,
     saveRenderConfiguration,
     shareProject,
+    setActiveRenderVersion,
+    updateRenderVersionDetails,
+    uploadRenderVersionAsset,
     unshareProject,
 } from "../../lib/puter.action";
-import { ReactCompareSlider, ReactCompareSliderImage } from "react-compare-slider";
 import FloorPlanAnalysisPanel from "../../components/FloorPlanAnalysisPanel";
 import type { FloorPlanAnalysis } from "../../lib/floor-plan-analysis";
 import ArchitecturalDesignSettingsPanel from "../../components/ArchitecturalDesignSettingsPanel";
+import GenerationModeSelector from "../../components/GenerationModeSelector";
+import RenderComparisonPanel from "../../components/RenderComparisonPanel";
+import RenderHistoryPanel from "../../components/RenderHistoryPanel";
 import type { RenderConfiguration } from "../../lib/render-configuration";
 import { isRenderConfiguration } from "../../lib/render-configuration";
 import {
@@ -31,6 +37,7 @@ import {
 } from "../../lib/generation-workflow";
 import type { GenerationMetadata, GenerationMode } from "../../lib/generation-types";
 import { ENHANCED_PROMPT_TEMPLATE_VERSION } from "../../lib/generation-prompt";
+import { getRenderVersions } from "../../lib/render-version";
 
 const VisualizerId = () => {
     const { id } = useParams();
@@ -51,10 +58,25 @@ const VisualizerId = () => {
     const [sharingMessage, setSharingMessage] = useState("");
     const [shareUrl, setShareUrl] = useState("");
     const [currentImage, setCurrentImage] = useState<string | null>(null);
+    const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
+    const [selectedGenerationMode, setSelectedGenerationMode] =
+        useState<GenerationMode>("baseline");
+    const [isVersionSaving, setIsVersionSaving] = useState(false);
+    const [versionMessage, setVersionMessage] = useState("");
+    const [isVersionMessageError, setIsVersionMessageError] = useState(false);
     const canGenerateProject = Boolean(
         project?.ownerId && userId && project.ownerId === userId,
     );
     const canUnshareProject = project?.isPublic && project.ownerId === userId;
+    const renderVersions = project ? getRenderVersions(project) : [];
+    const selectedVersion = renderVersions.find(
+        ({ id: versionId }) => versionId === selectedVersionId,
+    ) ?? null;
+    const activeRenderImage = project
+        ? project.renderVersionImages?.[project.activeRenderVersionId ?? ""] ??
+            project.renderedImage ??
+            null
+        : null;
 
     const handleBack = () =>navigate('/');
 
@@ -96,13 +118,16 @@ const VisualizerId = () => {
         return savedConfiguration;
     };
 
-    const handleExport = async () => {
-        if (!currentImage) return;
+    const handleExport = async (
+        imageSource = currentImage,
+        versionNumber?: number,
+    ) => {
+        if (!imageSource) return;
 
         let downloadUrl: string | null = null;
 
         try {
-            const response = await fetch(currentImage);
+            const response = await fetch(imageSource);
             if (!response.ok) {
                 throw new Error(`Image download failed: ${response.status} ${response.statusText}`);
             }
@@ -119,7 +144,8 @@ const VisualizerId = () => {
 
             downloadUrl = URL.createObjectURL(image);
             link.href = downloadUrl;
-            link.download = `${safeName || 'ArchVision'}-render.${extension}`;
+            const versionSuffix = versionNumber ? `-version-${versionNumber}` : "";
+            link.download = `${safeName || 'ArchVision'}-render${versionSuffix}.${extension}`;
             document.body.appendChild(link);
             link.click();
             link.remove();
@@ -173,7 +199,10 @@ const VisualizerId = () => {
         }
     };
 
-    const runGeneration = async (item: DesignItem) => {
+    const runGeneration = async (
+        item: DesignItem,
+        requestedMode: GenerationMode = selectedGenerationMode,
+    ) => {
         if (generationRequestInFlight.current) return;
         if (!id || !item.sourceImage) {
             setGenerationError("The project source image is unavailable.");
@@ -187,17 +216,12 @@ const VisualizerId = () => {
             setGenerationError("Only the project owner can generate a render.");
             return;
         }
-        const generationMode: GenerationMode = item.generationMode ?? "baseline";
-        if (item.renderedImage) {
-            setGenerationError("This project already has a render. Existing renders are not overwritten.");
-            return;
-        }
+        const generationMode = requestedMode;
         if (generationMode === "enhanced") {
             const readiness = getEnhancedGenerationReadiness(
                 item.floorPlanAnalysis,
                 item.renderConfiguration,
                 true,
-                Boolean(item.renderedImage),
             );
             if (!readiness.ready) {
                 setGenerationError(readiness.missingPrerequisites.join(" "));
@@ -207,13 +231,15 @@ const VisualizerId = () => {
 
         generationRequestInFlight.current = true;
         let authorizedTimestamp: string | null = null;
+        let authorizedVersionId: string | null = null;
         let activeMetadata: GenerationMetadata | null = null;
         try {
             setIsProcessing(true);
             setGenerationError(null);
             
-            const authorization = await authorizeProjectGeneration(id);
+            const authorization = await authorizeProjectGeneration(id, generationMode);
             authorizedTimestamp = authorization.generationTimestamp;
+            authorizedVersionId = authorization.versionId;
             const startingMetadata: GenerationMetadata = {
                 generationMode: authorization.generationMode,
                 modelIdentifier: GENERATION_MODEL_IDENTIFIER,
@@ -224,6 +250,8 @@ const VisualizerId = () => {
                 approvedAnalysisRevision: authorization.approvedAnalysisRevision,
                 generationTimestamp: authorization.generationTimestamp,
                 generationStatus: "generating",
+                versionId: authorization.versionId,
+                versionNumber: authorization.versionNumber,
             };
             activeMetadata = startingMetadata;
             setProject((current) => current
@@ -256,67 +284,58 @@ const VisualizerId = () => {
                 );
             }
 
-            const completedMetadata: GenerationMetadata = {
-                ...result.generationMetadata,
-                generationMode: authorization.generationMode,
-                modelIdentifier: GENERATION_MODEL_IDENTIFIER,
-                promptTemplateVersion: authorization.generationMode === "baseline"
-                    ? "archvision-baseline-v1"
-                    : ENHANCED_PROMPT_TEMPLATE_VERSION,
-                configurationSnapshot: authorization.configuration ?? null,
-                approvedAnalysisRevision: authorization.approvedAnalysisRevision,
+            const imageAssetReference = await uploadRenderVersionAsset({
+                id,
+                versionId: authorization.versionId,
                 generationTimestamp: authorization.generationTimestamp,
-                generationStatus: "complete",
-                generationLatencyMs: result.generationMetadata.generationLatencyMs,
-            };
-            const updatedItem = {
-                ...item,
-                renderedImage: result.renderedImage,
-                renderedPath: result.renderedPath,
-                generationMode: authorization.generationMode,
-                generationMetadata: completedMetadata,
-                approvedAnalysisRevision: authorization.approvedAnalysisRevision ?? item.approvedAnalysisRevision,
-                timestamp: Date.now(),
-                ownerId: item.ownerId,
-                isPublic: item.isPublic ?? false,
-            };
-            const saveCompletedRender = async (candidate: typeof updatedItem) => {
-                const saved = await createProject({
-                    item: candidate,
-                    visibility: item.isPublic ? "public" : "private",
+                image: result.renderedImage,
+            });
+            const generationLatencyMs = result.generationMetadata.generationLatencyMs ??
+                Math.max(0, Math.round(performance.now() - aiStartTime));
+            try {
+                const saved = await commitRenderVersion({
+                    id,
+                    versionId: authorization.versionId,
+                    generationTimestamp: authorization.generationTimestamp,
+                    imageAssetReference,
+                    generationLatencyMs,
                 });
-                if (saved) return saved;
-
+                setProject(saved.project);
+                setSelectedVersionId(saved.version.id);
+                setCurrentImage(
+                    saved.project.renderVersionImages?.[saved.version.id] ??
+                    result.renderedImage,
+                );
+                setVersionMessage(`Version ${saved.version.versionNumber} was saved.`);
+                setIsVersionMessageError(false);
+            } catch (commitError) {
                 const refreshedProject = await getProjectById({ id });
-                if (!refreshedProject || refreshedProject.renderedImage) return null;
-
-                const refreshedMetadata: GenerationMetadata = refreshedProject.generationMetadata
-                    ? {
-                        ...candidate.generationMetadata,
-                        generationTimestamp: refreshedProject.generationMetadata.generationTimestamp,
-                        generationStatus: "complete",
-                        generationMode: refreshedProject.generationMetadata.generationMode ?? candidate.generationMetadata.generationMode,
-                        configurationSnapshot: refreshedProject.generationMetadata.configurationSnapshot ?? candidate.generationMetadata.configurationSnapshot,
-                        approvedAnalysisRevision: refreshedProject.generationMetadata.approvedAnalysisRevision ?? candidate.generationMetadata.approvedAnalysisRevision,
-                        modelIdentifier: refreshedProject.generationMetadata.modelIdentifier || candidate.generationMetadata.modelIdentifier,
-                        promptTemplateVersion: refreshedProject.generationMetadata.promptTemplateVersion || candidate.generationMetadata.promptTemplateVersion,
-                        generationLatencyMs: refreshedProject.generationMetadata.generationLatencyMs ?? candidate.generationMetadata.generationLatencyMs,
-                    }
-                    : candidate.generationMetadata;
-
-                return createProject({
-                    item: {
-                        ...candidate,
-                        generationMetadata: refreshedMetadata,
-                    },
-                    visibility: item.isPublic ? "public" : "private",
-                });
-            };
-            const saved = await saveCompletedRender(updatedItem);
-            if (!saved) throw new Error("The render was generated but could not be saved.");
-
-            setProject(saved);
-            setCurrentImage(saved.renderedImage || result.renderedImage);
+                const committedVersion = refreshedProject?.renderVersions?.find(
+                    ({ id: versionId }) => versionId === authorization.versionId,
+                );
+                if (refreshedProject && committedVersion) {
+                    setProject(refreshedProject);
+                    setSelectedVersionId(committedVersion.id);
+                    setCurrentImage(
+                        refreshedProject.renderVersionImages?.[committedVersion.id] ??
+                        result.renderedImage,
+                    );
+                    setVersionMessage(`Version ${committedVersion.versionNumber} was saved.`);
+                    setIsVersionMessageError(false);
+                    return;
+                }
+                try {
+                    await deleteUncommittedRenderVersionAsset({
+                        id,
+                        versionId: authorization.versionId,
+                        generationTimestamp: authorization.generationTimestamp,
+                        imageAssetReference,
+                    });
+                } catch (cleanupError) {
+                    console.error("Failed to clean up the uncommitted render image:", cleanupError);
+                }
+                throw commitError;
+            }
         } catch (error) {
             if (authorizedTimestamp) {
                 try {
@@ -345,6 +364,82 @@ const VisualizerId = () => {
         }
     }
 
+    const handleSelectVersion = (versionId: string) => {
+        setGenerationError(null);
+        setSelectedVersionId(versionId);
+        const image = project?.renderVersionImages?.[versionId];
+        if (!image) {
+            setGenerationError("This private render image is unavailable.");
+            return;
+        }
+        setCurrentImage(image);
+    };
+
+    const handleSetActiveVersion = async (versionId: string) => {
+        if (!id || !canGenerateProject || isVersionSaving) return;
+        setIsVersionSaving(true);
+        setVersionMessage("");
+        setIsVersionMessageError(false);
+        try {
+            const updated = await setActiveRenderVersion(id, versionId);
+            setProject(updated);
+            setSelectedVersionId(versionId);
+            setCurrentImage(
+                updated.renderVersionImages?.[versionId] ??
+                    updated.renderedImage ??
+                    null,
+            );
+            setVersionMessage("Active render updated. No AI generation was started.");
+            setIsVersionMessageError(false);
+        } catch (error) {
+            console.error("Failed to activate render version:", error);
+            setVersionMessage(error instanceof Error
+                ? error.message
+                : "Unable to update the active render.");
+            setIsVersionMessageError(true);
+        } finally {
+            setIsVersionSaving(false);
+        }
+    };
+
+    const handleSaveVersionDetails = async (
+        versionId: string,
+        name: string,
+        notes: string,
+    ) => {
+        if (!id || !canGenerateProject || isVersionSaving) {
+            throw new Error("Only the project owner can edit render version details.");
+        }
+        setIsVersionSaving(true);
+        setVersionMessage("");
+        setIsVersionMessageError(false);
+        try {
+            const updated = await updateRenderVersionDetails(id, versionId, { name, notes });
+            setProject(updated);
+            setVersionMessage("Render version details saved.");
+            setIsVersionMessageError(false);
+        } catch (error) {
+            console.error("Failed to update render version details:", error);
+            setIsVersionMessageError(true);
+            throw error;
+        } finally {
+            setIsVersionSaving(false);
+        }
+    };
+
+    const handleGenerateSelectedMode = () => {
+        if (project) void runGeneration(project, selectedGenerationMode);
+    };
+
+    const handleExportSelectedVersion = () => {
+        if (!selectedVersion) return;
+        const selectedImage = project?.renderVersionImages?.[selectedVersion.id] ??
+            (selectedVersion.id === project?.activeRenderVersionId
+                ? project.renderedImage
+                : null);
+        void handleExport(selectedImage, selectedVersion.versionNumber);
+    };
+
    useEffect(() => {
     let isMounted = true;
 
@@ -360,8 +455,24 @@ const VisualizerId = () => {
 
       if (!isMounted) return;
 
+      const versions = fetchedProject ? getRenderVersions(fetchedProject) : [];
+      const selectedId = fetchedProject?.activeRenderVersionId ??
+        versions[versions.length - 1]?.id ??
+        null;
       setProject(fetchedProject);
-      setCurrentImage(fetchedProject?.renderedImage || null);
+      setSelectedVersionId(selectedId);
+      setSelectedGenerationMode(
+        versions.find(({ id: versionId }) => versionId === selectedId)?.generationMode ??
+            fetchedProject?.generationMode ??
+            "baseline",
+      );
+      setCurrentImage(
+        (selectedId && fetchedProject?.renderVersionImages?.[selectedId]) ||
+            fetchedProject?.renderedImage ||
+            null,
+      );
+      setVersionMessage("");
+      setIsVersionMessageError(false);
       setGenerationError(null);
       setShareUrl(fetchedProject?.isPublic
         ? new URL(`/visualizer/${encodeURIComponent(id)}`, window.location.origin).toString()
@@ -387,7 +498,11 @@ const VisualizerId = () => {
       return;
 
     if (project.renderedImage) {
-      setCurrentImage(project.renderedImage);
+      const activeVersionId = project.activeRenderVersionId ?? selectedVersionId;
+      setCurrentImage(
+        (activeVersionId && project.renderVersionImages?.[activeVersionId]) ||
+            project.renderedImage,
+      );
       hasInitialGenerated.current = true;
       return;
     }
@@ -414,6 +529,11 @@ const VisualizerId = () => {
             </nav>
 
             <section className="content">
+                {!project && !isProjectLoading && (
+                    <p role="alert" className="note">
+                        The project could not be loaded. It may not exist or may be private to another owner.
+                    </p>
+                )}
                 <div className="panel">
 
                     <div className="panel-header">
@@ -431,7 +551,7 @@ const VisualizerId = () => {
                         <div className="panel-actions">
                             <Button
                                 size="sm"
-                                onClick={handleExport}
+                                onClick={() => void handleExport()}
                                 className="export"
                                 disabled={!currentImage}
                             >
@@ -444,7 +564,7 @@ const VisualizerId = () => {
                                 className="share"
                                 disabled={
                                     !project ||
-                                    !currentImage ||
+                                    !activeRenderImage ||
                                     isProjectLoading ||
                                     isProcessing ||
                                     isSharing ||
@@ -456,7 +576,7 @@ const VisualizerId = () => {
                                     ? "Updating..."
                                     : project?.isPublic
                                         ? canUnshareProject ? "Unshare" : "Shared"
-                                        : "Share"}
+                                        : "Share active render"}
 
                             </Button>
 
@@ -496,7 +616,7 @@ const VisualizerId = () => {
                         )}
 
                     </div>
-                    {project && !project.renderedImage && !canGenerateProject && (
+                    {project && renderVersions.length === 0 && !canGenerateProject && (
                         <p role="status" className="note">
                             Sign in as the project owner to generate a render.
                         </p>
@@ -505,15 +625,13 @@ const VisualizerId = () => {
                         <div className="panel-actions">
                             <p role="alert" className="note">{generationError}</p>
                             {project && canGenerateProject &&
-                                (project.generationMode ?? "baseline") === "baseline" &&
-                                project.generationMetadata?.generationStatus !== "failed" &&
                                 !isGenerationInProgress(project.generationMetadata) && (
                                 <Button
                                     size="sm"
-                                    onClick={() => void runGeneration(project)}
+                                    onClick={handleGenerateSelectedMode}
                                     disabled={isProcessing}
                                 >
-                                    Retry generation
+                                    Retry selected mode
                                 </Button>
                             )}
                         </div>
@@ -526,46 +644,36 @@ const VisualizerId = () => {
                         <div>
                             <p className="generation-workflow-eyebrow">Generation workflow</p>
                             <h2 id="generation-workflow-title">
-                                {project.generationMode === "enhanced" ? "Enhanced generation" : "Baseline generation"}
+                                {selectedGenerationMode === "enhanced" ? "Enhanced generation" : "Baseline generation"}
                             </h2>
                             <p>
-                                {project.generationMode === "enhanced"
+                                {selectedGenerationMode === "enhanced"
                                     ? "The source plan, approved structural findings, and saved design preferences guide this conceptual render."
-                                    : "Uses the original fixed-prompt image-generation pipeline. Baseline behavior is unchanged."}
+                                    : "Uses the original fixed-prompt image-generation pipeline. Saved settings are recorded for research traceability but are not applied to baseline prompting."}
                             </p>
                         </div>
-                        {project.generationMode === "enhanced" ? (
+                        {canGenerateProject && (
+                            <GenerationModeSelector
+                                value={selectedGenerationMode}
+                                onChange={setSelectedGenerationMode}
+                            />
+                        )}
+                        {selectedGenerationMode === "enhanced" ? (
                             <EnhancedGenerationReadiness
                                 project={project}
                                 isOwner={canGenerateProject}
                                 isProcessing={isProcessing}
-                                onGenerate={() => void runGeneration(project)}
                             />
                         ) : (
-                            <>
                             <p className="generation-workflow-state" role="status">
-                                {project.generationMetadata?.generationStatus === "complete"
-                                    ? "Baseline render complete."
+                                {renderVersions.length > 0
+                                    ? `${renderVersions.length} retained render${renderVersions.length === 1 ? "" : "s"}. A new baseline version will preserve the previous renders.`
                                     : isGenerationInProgress(project.generationMetadata)
                                         ? "Baseline generation is in progress in another session."
                                     : project.generationMetadata?.generationStatus === "failed"
-                                        ? "The last baseline request failed. Use Retry generation above."
-                                        : "Baseline projects render automatically when opened by their owner."}
+                                        ? "The last generation failed. You can retry or switch modes."
+                                        : "New baseline projects render automatically when opened by their owner."}
                             </p>
-                            {canGenerateProject &&
-                                !project.renderedImage &&
-                                (project.generationMetadata?.generationStatus === "failed" ||
-                                    (project.generationMetadata?.generationStatus === "generating" &&
-                                        !isGenerationInProgress(project.generationMetadata))) && (
-                                    <Button
-                                        size="sm"
-                                        onClick={() => void runGeneration(project)}
-                                        disabled={isProcessing}
-                                    >
-                                        Retry baseline generation
-                                    </Button>
-                                )}
-                            </>
                         )}
                         <p className="generation-workflow-disclaimer">
                             Generated images are conceptual visualizations, not verified CAD or BIM geometry.
@@ -591,42 +699,31 @@ const VisualizerId = () => {
                     />
                 )}
 
-                <div className="panel compare">
-                    <div className="panel-header">
-                        <div className="panel-meta">
-                            <p>Comparison</p>
-                            <h3>Before and After</h3>
+                <RenderHistoryPanel
+                    versions={renderVersions}
+                    versionImages={project?.renderVersionImages ?? {}}
+                    activeVersionId={project?.activeRenderVersionId ?? null}
+                    selectedVersionId={selectedVersionId}
+                    isOwner={canGenerateProject}
+                    isLoading={isProjectLoading}
+                    isGenerating={isProcessing ||
+                        isGenerationInProgress(project?.generationMetadata)}
+                    isSaving={isVersionSaving}
+                    statusMessage={versionMessage}
+                    statusIsError={isVersionMessageError}
+                    onSelect={handleSelectVersion}
+                    onSetActive={(versionId) => void handleSetActiveVersion(versionId)}
+                    onSaveDetails={handleSaveVersionDetails}
+                    onExport={handleExportSelectedVersion}
+                    onGenerate={handleGenerateSelectedMode}
+                />
 
-                        </div>
-                        <div className="hint">Drag to compare</div>
-                    </div>
-
-                    <div className="compare-stage">
-                        {project?.sourceImage && currentImage ? (
-                            <ReactCompareSlider
-                                defaultValue={50}
-                                style={{ width: '100%', height: 'auto' }}
-                                itemOne={
-                                    <ReactCompareSliderImage src={project?.sourceImage} alt="before"
-                                    className="compare-img" />
-                                }
-                                 itemTwo={
-                                    <ReactCompareSliderImage src={currentImage} alt="after"
-                                    className="compare-img" />
-                                }
-                            />
-                        ) : (
-                            <div className="compare-fallback">
-                                {project?.sourceImage && (
-                                    <img src={project.sourceImage} alt="Before" className="compare-img" />
-                                )}
-
-                            </div>
-                        )}
-
-                    </div>
-
-                </div>
+                <RenderComparisonPanel
+                    sourceImage={project?.sourceImage ?? ""}
+                    versions={renderVersions}
+                    versionImages={project?.renderVersionImages ?? {}}
+                    selectedVersionId={selectedVersionId}
+                />
 
             </section>
            
@@ -639,18 +736,15 @@ const EnhancedGenerationReadiness = ({
     project,
     isOwner,
     isProcessing,
-    onGenerate,
 }: {
     project: DesignItem;
     isOwner: boolean;
     isProcessing: boolean;
-    onGenerate: () => void;
 }) => {
     const readiness = getEnhancedGenerationReadiness(
         project.floorPlanAnalysis,
         project.renderConfiguration,
         isOwner,
-        Boolean(project.renderedImage),
     );
     const configuration = isRenderConfiguration(project.renderConfiguration)
         ? project.renderConfiguration
@@ -662,7 +756,7 @@ const EnhancedGenerationReadiness = ({
         : project.generationMetadata?.generationStatus === "failed"
             ? "The previous enhanced request failed. Resolve any errors and retry."
             : project.generationMetadata?.generationStatus === "complete"
-                ? "Enhanced render complete."
+                    ? "Previous enhanced render complete. You can generate another version."
                 : readiness.ready
                     ? "Ready to generate."
                     : "Not ready to generate.";
@@ -684,22 +778,6 @@ const EnhancedGenerationReadiness = ({
                         <li key={prerequisite}>{prerequisite}</li>
                     ))}
                 </ul>
-            )}
-            {isOwner && !project.renderedImage && (
-                <Button
-                    size="sm"
-                    onClick={onGenerate}
-                    disabled={!readiness.ready || isProcessing ||
-                        isGenerationInProgress(project.generationMetadata)}
-                >
-                    {isProcessing
-                        ? "Generating..."
-                        : isGenerationInProgress(project.generationMetadata)
-                            ? "Generation in progress"
-                        : project.generationMetadata?.generationStatus === "failed"
-                            ? "Retry enhanced generation"
-                            : "Start enhanced generation"}
-                </Button>
             )}
         </div>
     );

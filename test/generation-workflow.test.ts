@@ -43,8 +43,8 @@ describe("generation workflow", () => {
         })).toBe(false);
     });
 
-    it("reports missing approval, configuration, and owner readiness", () => {
-        expect(getEnhancedGenerationReadiness(null, null, false, false)).toEqual({
+    it("reports missing approval, configuration, and owner readiness without blocking existing renders", () => {
+        expect(getEnhancedGenerationReadiness(null, null, false)).toEqual({
             ready: false,
             missingPrerequisites: [
                 "Sign in as the project owner.",
@@ -56,13 +56,11 @@ describe("generation workflow", () => {
             approvedAnalysis,
             createDefaultRenderConfiguration(),
             true,
-            false,
         )).toEqual({ ready: true, missingPrerequisites: [] });
         expect(getEnhancedGenerationReadiness(
             approvedAnalysis,
             createDefaultRenderConfiguration(),
             true,
-            true,
-        ).ready).toBe(false);
+        ).ready).toBe(true);
     });
 });

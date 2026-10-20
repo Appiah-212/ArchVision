@@ -153,11 +153,39 @@ The Worker derives the generation mode and Enhanced inputs from the owner-scoped
 
 The saved private render stores `generationMode`, `modelIdentifier`, `promptTemplateVersion`, `configurationSnapshot`, `approvedAnalysisRevision`, `generationTimestamp`, `generationStatus`, and measured `generationLatencyMs`. Existing `sourceImage` and `renderedImage` fields remain unchanged. A successful render cannot be overwritten by another generation. Private analysis, configuration, and generation metadata remain excluded from public project copies.
 
-### Limitations and research preparation
+## Phase 2.4 render versioning, history, and comparison
 
-Both modes produce conceptual images from a 2D raster image, not verified CAD/BIM geometry, editable construction documents, measured dimensions, or professional design advice. Image generation can omit or alter features even when structural constraints are supplied. The two modes provide the preserved baseline and structured inputs needed for a controlled research comparison; mode and prompt metadata support later analysis but do not establish architectural consistency by themselves.
+### RenderVersion schema and creation
 
-This milestone deliberately does not add render history. The single-render metadata shape is compatible with a future Phase 2.4 version-history model, while the baseline/enhanced distinction and approved-analysis revision prepare the project for Phase 2.5 structural-fidelity evaluation. Those phases are not included here.
+Each successful generation creates an immutable `RenderVersion` record with a distinct ID, project ID, monotonically increasing project version number, private image asset reference, baseline/enhanced mode, model identifier, prompt-template version, configuration snapshot, approved-analysis revision and available analysis snapshot, creation timestamp, optional measured generation duration, completion status, and optional user name/notes. The runtime schema is defined in `lib/render-version.ts` and the Worker validates persisted records independently. Only the name and notes can be changed after creation.
+
+The owner selects Baseline or Enhanced in the visualizer and starts a new render. Baseline retains the Phase 2.3 fixed prompt; it records saved design and approved-analysis context when available, but does not apply those inputs to baseline prompting. Enhanced still requires approved analysis and saved configuration. The Worker authorizes the requested mode, assigns the version ID/number, checks the per-project generation lock, and charges the existing daily quota before any billable AI call. Image bytes are stored in private Puter filesystem assets; only references and metadata go into KV. A version is committed after its image asset is stored. Failed AI generation does not create a successful version, and failed persistence leaves earlier versions intact; uncommitted image cleanup is attempted.
+
+### Legacy projects and active render
+
+Projects with no render remain versionless. A project with only legacy `renderedImage`/`renderedPath` is adapted in memory into a stable, read-only Version 1 entry; reading it does not write a migration or consume quota. The next successful generation commits the legacy entry alongside the new version. No destructive migration is performed.
+
+`activeRenderVersionId` identifies the owner's selected active version. The existing `renderedImage` and `renderedPath` fields remain compatibility pointers to that selected private asset, so existing display/export/share functions continue to use one render. Selecting or activating a version only updates metadata and these compatibility pointers; it never starts AI generation or consumes quota.
+
+### History and comparison
+
+The visualizer's Render History panel shows retained thumbnails, version numbers/names, dates, mode/status, style, model, prompt-template version, approved-analysis revision, and measured duration. Owners may select a render for viewing, mark it active, rename it, edit notes, export it, or start another version. Metadata records input conditions so baseline/enhanced comparisons can be interpreted; different conditions are not asserted to be scientifically comparable.
+
+Comparison supports (A) the original uploaded floor plan versus any retained version and (B) any two retained versions. Version A and B can be selected independently. Images use contained sizing to preserve source proportions where possible. These visual comparisons are research aids only; ArchVision does not calculate structural fidelity scores.
+
+### Storage, privacy, sharing, and authorization
+
+Render image bytes stay in owner-scoped private Puter filesystem storage. Project/version metadata stays in Puter KV and contains no binary image contents. Worker writes verify the authenticated Puter profile owns the project; private version retrieval resolves the image through the stored project/version relationship, not a client-supplied filesystem path. The Worker checks version IDs, asset references, immutable generation metadata, and project ownership. AI authorization/quota and duplicate-generation locking remain Worker-controlled.
+
+Public project responses omit the private version collection, active version ID, generation metadata, floor-plan analysis, and saved settings. Sharing publishes the source and only the owner's explicitly active render; historical private versions are not copied to public hosting. Unsharing removes the hosted public assets and public KV record where Puter permits. Existing public links continue to show the currently published single render; changing the private active version does not silently republish it.
+
+### Research traceability and limitations
+
+Each version records its source project, generation mode, model, prompt-template version, generation timestamp/duration, saved configuration where available, approved analysis revision/snapshot where available, and outcome status. Baseline style/analysis context is labeled as traceability data and is not represented as input to baseline prompting. Failed attempts remain in project-level generation status rather than appearing as successful render versions.
+
+Puter KV offers read/write operations without a compare-and-swap transaction for project JSON. The Worker uses an atomic KV increment lock for generation authorization and validates the active authorization again before commit, but metadata updates (including activation and editable labels) remain read/modify/write operations and can race across tabs. If a write response is lost, the client reloads to detect a committed version before attempting cleanup; safe cleanup retains any asset already referenced by a version. Version numbers and lock semantics therefore rely on Puter's documented atomic increment behavior, not a multi-record transaction.
+
+Both modes generate conceptual images from raster floor plans, not verified CAD/BIM geometry, construction documents, measured dimensions, or professional design advice. Image generation can omit or alter features even when structural constraints are supplied. The system records experimental conditions but does not fabricate experimental results or claim structural fidelity.
 
 ---
 

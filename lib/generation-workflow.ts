@@ -47,7 +47,6 @@ export const getEnhancedGenerationReadiness = (
     analysis: unknown,
     configuration: unknown,
     isOwner: boolean,
-    hasRenderedImage: boolean,
 ): EnhancedGenerationReadiness => {
     const missingPrerequisites: string[] = [];
     if (!isOwner) missingPrerequisites.push("Sign in as the project owner.");
@@ -56,9 +55,6 @@ export const getEnhancedGenerationReadiness = (
     }
     if (!isRenderConfiguration(configuration)) {
         missingPrerequisites.push("Save valid architectural design settings.");
-    }
-    if (hasRenderedImage) {
-        missingPrerequisites.push("This project already has a render.");
     }
     return { ready: missingPrerequisites.length === 0, missingPrerequisites };
 };

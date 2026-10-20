@@ -7,8 +7,8 @@ type GenerationModeSelectorProps = {
 
 const GenerationModeSelector = ({ value, onChange }: GenerationModeSelectorProps) => (
     <fieldset className="generation-mode-selector">
-        <legend>Choose a generation workflow</legend>
-        <label>
+        <legend>Choose a render workflow</legend>
+        <label className="generation-mode-option">
             <input
                 type="radio"
                 name="generation-mode"
@@ -16,12 +16,12 @@ const GenerationModeSelector = ({ value, onChange }: GenerationModeSelectorProps
                 checked={value === "baseline"}
                 onChange={() => onChange("baseline")}
             />
-            <span>
+            <span className="generation-mode-option__copy">
                 <strong>Baseline</strong>
-                <small>Generate automatically with the original fixed prompt.</small>
+                <small>Generate with ArchVision's original prompt.</small>
             </span>
         </label>
-        <label>
+        <label className="generation-mode-option">
             <input
                 type="radio"
                 name="generation-mode"
@@ -29,9 +29,9 @@ const GenerationModeSelector = ({ value, onChange }: GenerationModeSelectorProps
                 checked={value === "enhanced"}
                 onChange={() => onChange("enhanced")}
             />
-            <span>
+            <span className="generation-mode-option__copy">
                 <strong>Enhanced</strong>
-                <small>Review the plan and save design preferences before you start generation.</small>
+                <small>Review the floor plan and set design preferences first.</small>
             </span>
         </label>
     </fieldset>
