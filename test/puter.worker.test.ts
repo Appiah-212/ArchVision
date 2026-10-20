@@ -50,6 +50,7 @@ const saveHandler = handlers.get('POST /api/projects/save')!;
 const generationHandler = handlers.get('POST /api/projects/generation/authorize')!;
 const analysisAuthorizationHandler = handlers.get('POST /api/projects/floor-plan-analysis/authorize')!;
 const analysisSaveHandler = handlers.get('POST /api/projects/floor-plan-analysis/save')!;
+const renderConfigurationSaveHandler = handlers.get('POST /api/projects/render-configuration/save')!;
 const shareHandler = handlers.get('POST /api/projects/share')!;
 const unshareHandler = handlers.get('POST /api/projects/unshare')!;
 
@@ -70,6 +71,19 @@ const approvedAnalysis = {
   walls: [],
   relationships: [],
   uncertainties: ['The room function is not identifiable.'],
+};
+const renderConfiguration = {
+  schemaVersion: 1,
+  architecturalStyle: 'Scandinavian',
+  flooringMaterial: 'Hardwood',
+  wallFinish: 'Painted plaster',
+  colorPalette: 'Natural',
+  lighting: 'Natural daylight',
+  furnitureStyle: 'Scandinavian',
+  perspective: 'Isometric view',
+  customInstructions: 'Prefer light timber and uncluttered furniture.',
+  customValues: {},
+  updatedAt: '2026-10-20T00:00:00.000Z',
 };
 
 const createUserPuter = (uuid: string) => ({
@@ -161,6 +175,43 @@ describe('Worker private project image access', () => {
     expect(owner.kv.set).not.toHaveBeenCalled();
   });
 
+  it('preserves private metadata when a project save omits unrelated fields', async () => {
+    const owner = createUserPuter('owner-1');
+    owner.kv.get.mockResolvedValue({
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+      renderedImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174001.png',
+      floorPlanAnalysis: approvedAnalysis,
+      renderConfiguration,
+      name: 'Existing project',
+    });
+    const response = await saveHandler({
+      request: new Request('https://worker.example/api/projects/save', {
+        method: 'POST',
+        body: JSON.stringify({
+          project: {
+            id: 'plan-1',
+            sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+          },
+          visibility: 'private',
+        }),
+      }),
+      user: { puter: owner },
+    });
+
+    expect(response.status).toBe(200);
+    expect(owner.kv.set).toHaveBeenCalledWith(
+      'archvision_project_owner-1_plan-1',
+      expect.objectContaining({
+        renderedImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174001.png',
+        floorPlanAnalysis: approvedAnalysis,
+        renderConfiguration,
+        name: 'Existing project',
+      }),
+    );
+  });
+
   it('allows only the owning Puter user to retrieve a private project image', async () => {
     const project = {
       id: 'plan-1',
@@ -199,6 +250,8 @@ describe('Worker private project image access', () => {
       id: 'shared-1',
       sourceImage: 'https://images.puter.site/projects/shared-1/source.png',
       isPublic: true,
+      floorPlanAnalysis: { summary: 'private structural notes' },
+      renderConfiguration,
     };
     workerKv.get.mockResolvedValue(project);
 
@@ -207,7 +260,13 @@ describe('Worker private project image access', () => {
     });
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ project });
+    await expect(response.json()).resolves.toEqual({
+      project: {
+        id: project.id,
+        sourceImage: project.sourceImage,
+        isPublic: true,
+      },
+    });
     expect(workerKv.get).toHaveBeenCalledWith('archvision_public_project_shared-1');
   });
 
@@ -221,6 +280,7 @@ describe('Worker private project image access', () => {
             sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
             isPublic: false,
             floorPlanAnalysis: { summary: 'Owner-only interpretation' },
+            renderConfiguration,
           }
         : null,
     );
@@ -243,6 +303,7 @@ describe('Worker private project image access', () => {
       'archvision_public_project_plan-1',
       expect.not.objectContaining({
         floorPlanAnalysis: expect.anything(),
+        renderConfiguration: expect.anything(),
       }),
     );
     expect(workerKv.set).toHaveBeenCalledWith(
@@ -522,5 +583,186 @@ describe('Worker private project image access', () => {
     });
     expect(denied.status).toBe(403);
     expect(otherUser.kv.set).not.toHaveBeenCalled();
+  });
+
+  it('saves aesthetic settings without replacing structural analysis or image references', async () => {
+    const owner = createUserPuter('owner-1');
+    const existingProject = {
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      isPublic: false,
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+      renderedImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174001.png',
+      floorPlanAnalysis: approvedAnalysis,
+      name: 'House project',
+      timestamp: 123,
+    };
+    let persistedProject = existingProject;
+    owner.kv.get.mockImplementation(async (key: string) =>
+      key === 'archvision_project_owner-1_plan-1' ? persistedProject : null,
+    );
+    owner.kv.set.mockImplementation(async (_key: string, value: typeof existingProject) => {
+      persistedProject = value;
+    });
+
+    const response = await renderConfigurationSaveHandler({
+      request: new Request('https://worker.example/api/projects/render-configuration/save', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1', configuration: renderConfiguration }),
+      }),
+      user: { puter: owner },
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ configuration: renderConfiguration });
+    expect(owner.kv.set).toHaveBeenCalledWith(
+      'archvision_project_owner-1_plan-1',
+      expect.objectContaining({
+        ...existingProject,
+        renderConfiguration,
+        floorPlanAnalysis: approvedAnalysis,
+        ownerId: 'owner-1',
+        isPublic: false,
+      }),
+    );
+    expect(workerKv.set).not.toHaveBeenCalled();
+
+    const reloaded = await projectHandler({
+      request: new Request('https://worker.example/api/projects/get?id=plan-1'),
+      user: { puter: owner },
+    });
+    await expect(reloaded.json()).resolves.toMatchObject({
+      project: {
+        floorPlanAnalysis: approvedAnalysis,
+        renderConfiguration,
+        sourceImage: existingProject.sourceImage,
+        renderedImage: existingProject.renderedImage,
+      },
+    });
+  });
+
+  it('rejects non-owner and malformed render configuration writes', async () => {
+    const otherUser = createUserPuter('owner-2');
+    otherUser.kv.get.mockResolvedValue(null);
+    workerKv.get.mockResolvedValue({
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'https://images.puter.site/plan-1/source.png',
+    });
+
+    const denied = await renderConfigurationSaveHandler({
+      request: new Request('https://worker.example/api/projects/render-configuration/save', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1', configuration: renderConfiguration }),
+      }),
+      user: { puter: otherUser },
+    });
+    expect(denied.status).toBe(403);
+    expect(otherUser.kv.set).not.toHaveBeenCalled();
+
+    const owner = createUserPuter('owner-1');
+    owner.kv.get.mockResolvedValue({
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+    });
+    const invalid = await renderConfigurationSaveHandler({
+      request: new Request('https://worker.example/api/projects/render-configuration/save', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: 'plan-1',
+          configuration: { ...renderConfiguration, furnitureStyle: 'Victorian' },
+        }),
+      }),
+      user: { puter: owner },
+    });
+    expect(invalid.status).toBe(400);
+    expect(owner.kv.set).not.toHaveBeenCalled();
+  });
+
+  it('does not treat an ownerless global legacy record as proof of ownership', async () => {
+    const user = createUserPuter('owner-2');
+    user.kv.get.mockImplementation(async (key: string) =>
+      key === 'archvision_project_plan-1'
+        ? {
+            id: 'plan-1',
+            sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+          }
+        : null,
+    );
+    const response = await renderConfigurationSaveHandler({
+      request: new Request('https://worker.example/api/projects/render-configuration/save', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1', configuration: renderConfiguration }),
+      }),
+      user: { puter: user },
+    });
+
+    expect(response.status).toBe(404);
+    expect(user.kv.set).not.toHaveBeenCalled();
+  });
+
+  it('keeps design settings private when creating the public shared copy', async () => {
+    const owner = createUserPuter('owner-1');
+    owner.kv.get.mockImplementation(async (key: string) =>
+      key === 'archvision_project_owner-1_plan-1'
+        ? {
+            id: 'plan-1',
+            ownerId: 'owner-1',
+            sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+            isPublic: false,
+            floorPlanAnalysis: approvedAnalysis,
+            renderConfiguration,
+          }
+        : null,
+    );
+
+    const response = await shareHandler({
+      request: new Request('https://worker.example/api/projects/share', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: 'plan-1',
+          publicAssets: {
+            sourceImage: 'https://images.puter.site/projects/plan-1/source.png',
+          },
+          publicAssetPaths: ['projects/plan-1/source.png'],
+        }),
+      }),
+      user: { puter: owner },
+    });
+
+    expect(response.status).toBe(200);
+    expect(workerKv.set).toHaveBeenCalledWith(
+      'archvision_public_project_plan-1',
+      expect.not.objectContaining({
+        floorPlanAnalysis: expect.anything(),
+        renderConfiguration: expect.anything(),
+      }),
+    );
+  });
+
+  it('returns a storage error without a success-shaped response when KV save fails', async () => {
+    const owner = createUserPuter('owner-1');
+    owner.kv.get.mockResolvedValue({
+      id: 'plan-1',
+      ownerId: 'owner-1',
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+      floorPlanAnalysis: approvedAnalysis,
+    });
+    owner.kv.set.mockRejectedValue(new Error('KV unavailable'));
+
+    const response = await renderConfigurationSaveHandler({
+      request: new Request('https://worker.example/api/projects/render-configuration/save', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1', configuration: renderConfiguration }),
+      }),
+      user: { puter: owner },
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      error: 'Failed to save design settings',
+      message: 'KV unavailable',
+    });
   });
 });

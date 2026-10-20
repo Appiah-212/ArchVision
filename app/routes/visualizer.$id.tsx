@@ -9,12 +9,15 @@ import {
     createProject,
     getProjectById,
     saveFloorPlanAnalysis,
+    saveRenderConfiguration,
     shareProject,
     unshareProject,
 } from "../../lib/puter.action";
 import { ReactCompareSlider, ReactCompareSliderImage } from "react-compare-slider";
 import FloorPlanAnalysisPanel from "../../components/FloorPlanAnalysisPanel";
 import type { FloorPlanAnalysis } from "../../lib/floor-plan-analysis";
+import ArchitecturalDesignSettingsPanel from "../../components/ArchitecturalDesignSettingsPanel";
+import type { RenderConfiguration } from "../../lib/render-configuration";
 
 const VisualizerId = () => {
     const { id } = useParams();
@@ -60,6 +63,19 @@ const VisualizerId = () => {
         setProject((current) => current
             ? { ...current, floorPlanAnalysis: savedAnalysis }
             : current);
+    };
+
+    const handleSaveRenderConfiguration = async (
+        configuration: RenderConfiguration,
+    ): Promise<RenderConfiguration> => {
+        if (!id || !project || !canGenerateProject) {
+            throw new Error("Only the project owner can save design settings.");
+        }
+        const savedConfiguration = await saveRenderConfiguration(id, configuration);
+        setProject((current) => current
+            ? { ...current, renderConfiguration: savedConfiguration }
+            : current);
+        return savedConfiguration;
     };
 
     const handleExport = async () => {
@@ -384,6 +400,14 @@ const VisualizerId = () => {
                         isOwner={canGenerateProject}
                         onAnalyze={handleAnalyzeFloorPlan}
                         onApprove={handleApproveAnalysis}
+                    />
+                )}
+
+                {project && (
+                    <ArchitecturalDesignSettingsPanel
+                        savedConfiguration={project.renderConfiguration}
+                        isOwner={canGenerateProject}
+                        onSave={handleSaveRenderConfiguration}
                     />
                 )}
 

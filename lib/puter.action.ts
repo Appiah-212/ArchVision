@@ -3,6 +3,10 @@ import { deleteHostedAsset, getOrCreateHostingConfig, uploadFileToHosting, uploa
 import { fetchBlobFromUrl, getImageExtension } from "./utils";
 import { PUTER_WORKER_URL } from "./constants";
 import { validateFloorPlanAnalysis, type FloorPlanAnalysis } from "./floor-plan-analysis";
+import {
+    validateRenderConfiguration,
+    type RenderConfiguration,
+} from "./render-configuration";
 
 const PRIVATE_ASSET_PREFIX = "archvision_private_asset:";
 
@@ -195,6 +199,31 @@ export const saveFloorPlanAnalysis = async (
         throw new Error(data.error || "Unable to save floor-plan analysis");
     }
     return validateFloorPlanAnalysis(data.analysis);
+};
+
+export const saveRenderConfiguration = async (
+    id: string,
+    configuration: RenderConfiguration,
+): Promise<RenderConfiguration> => {
+    if (!PUTER_WORKER_URL) throw new Error("Design settings are unavailable: Worker URL is not configured");
+    const validConfiguration = validateRenderConfiguration(configuration);
+    const response = await puter.workers.exec(
+        `${PUTER_WORKER_URL}/api/projects/render-configuration/save`,
+        {
+            method: "POST",
+            body: JSON.stringify({ id, configuration: validConfiguration }),
+        },
+    );
+    let data: { configuration?: unknown; error?: string };
+    try {
+        data = (await response.json()) as typeof data;
+    } catch {
+        throw new Error("The Worker returned an invalid design settings response");
+    }
+    if (!response.ok) {
+        throw new Error(data.error || "Unable to save design settings");
+    }
+    return validateRenderConfiguration(data.configuration);
 };
 
 export const createProject = async ({ item, visibility="private" }: CreateProjectParams):

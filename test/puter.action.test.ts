@@ -35,9 +35,14 @@ import {
   authorizeProjectGeneration,
   createProject,
   getProjectById,
+  saveRenderConfiguration,
   saveFloorPlanAnalysis,
 } from '../lib/puter.action';
 import type { FloorPlanAnalysis } from '../lib/floor-plan-analysis';
+import {
+  createDefaultRenderConfiguration,
+  type RenderConfiguration,
+} from '../lib/render-configuration';
 
 const approvedAnalysis: FloorPlanAnalysis = {
   schemaVersion: 1,
@@ -286,5 +291,41 @@ describe('public project retrieval', () => {
         body: JSON.stringify({ id: 'plan-1', analysis: approvedAnalysis }),
       }),
     );
+  });
+
+  it('saves validated render settings through the project Worker without invoking AI', async () => {
+    const configuration: RenderConfiguration = {
+      ...createDefaultRenderConfiguration('2026-10-20T00:00:00.000Z'),
+      architecturalStyle: 'Scandinavian',
+      colorPalette: 'Natural',
+      furnitureStyle: 'Scandinavian',
+    };
+    exec.mockResolvedValue(new Response(JSON.stringify({ configuration }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await expect(saveRenderConfiguration('plan-1', configuration)).resolves.toEqual(
+      configuration,
+    );
+    expect(exec).toHaveBeenCalledWith(
+      expect.stringContaining('/api/projects/render-configuration/save'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ id: 'plan-1', configuration }),
+      }),
+    );
+  });
+
+  it('rejects invalid client configuration before calling the Worker', async () => {
+    const invalid = JSON.parse(JSON.stringify({
+      ...createDefaultRenderConfiguration(),
+      flooringMaterial: 'Carpet',
+    }));
+
+    await expect(saveRenderConfiguration('plan-1', invalid)).rejects.toThrow(
+      'Design settings are invalid',
+    );
+    expect(exec).not.toHaveBeenCalled();
   });
 });

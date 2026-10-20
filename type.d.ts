@@ -28,6 +28,7 @@ interface DesignItem {
     sharedAt?: string | null;
     isPublic?: boolean;
     floorPlanAnalysis?: import("./lib/floor-plan-analysis").FloorPlanAnalysis;
+    renderConfiguration?: import("./lib/render-configuration").RenderConfiguration;
 }
 
 interface DesignConfig {
