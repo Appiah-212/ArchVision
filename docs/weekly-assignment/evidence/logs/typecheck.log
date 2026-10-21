@@ -1,0 +1,10 @@
+COMMAND: npm run typecheck
+STARTED: 2026-10-21T16:40:06Z
+
+> typecheck
+> react-router typegen && tsc
+
+TypeScript validation completed with exit code 0.
+
+EXIT_CODE: 0
+DURATION_SECONDS: ~5

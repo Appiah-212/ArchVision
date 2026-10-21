@@ -1,0 +1,16 @@
+COMMAND: npm run test:run
+STARTED: 2026-10-21T16:40:35Z
+
+> test:run
+> vitest run
+
+RUN v5.0.3 C:/Users/USER/OneDrive/Documents/ArchVision
+
+Test Files  20 passed (20)
+Tests       140 passed (140)
+Start at    16:40:35
+Duration    61.99s (environment 75%, setup 18%, import 4%, transform 1%, tests 1%)
+Environment jsdom created 20 times; 634.67s total, 75% tracked time.
+
+EXIT_CODE: 0
+DURATION_SECONDS: 61.99

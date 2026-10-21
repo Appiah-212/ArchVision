@@ -1,0 +1,7 @@
+COMMAND: git diff --check
+STARTED: 2026-10-21T16:40:06Z
+
+No whitespace errors reported.
+
+EXIT_CODE: 0
+DURATION_SECONDS: 0.124
