@@ -1,0 +1,8 @@
+COMMAND: npm run build
+STARTED: 2026-10-21T16:40:06Z
+
+React Router production client and SSR build completed. 2,195 client modules transformed; 31 SSR modules transformed. Client build 8.92s; SSR build 0.952s.
+Warnings: COMMONJS_VARIABLE_IN_ESM from @heyputer/puter.js polyfills localStorage.js and xhrshim.js; PLUGIN_TIMINGS indicates React Router resolveId/transform callbacks dominate 74% of build wall time. Build exited 0.
+
+EXIT_CODE: 0
+DURATION_SECONDS: ~15
