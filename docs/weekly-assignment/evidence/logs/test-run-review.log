@@ -1,0 +1,21 @@
+COMMAND: npm run test:run
+DATE: 2026-10-21
+DURATION: 38.46 s
+
+
+> test:run
+> vitest run
+
+
+ RUN  v5.0.3 C:/Users/USER/OneDrive/Documents/ArchVision
+
+ Test Files  20 passed (20)
+      Tests  140 passed (140)
+   Start at  17:06:16
+   Duration  38.46s (environment 81%, setup 12%, tests 3%, import 3%, transform 2%)
+
+ Environment  jsdom was created 20 times · 378.25s total, 81% of tracked time
+             create it once per worker with pool: 'vmThreads' (keeps per-file isolation) or isolate: false (shares it across files)
+             learn more: https://vitest.dev/guide/improving-performance#test-environments
+
+EXIT_CODE: 0

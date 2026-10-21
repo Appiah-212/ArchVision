@@ -12,7 +12,7 @@ The reviewed system is a React 19 / TypeScript application using React Router SS
 
 The repository is on branch `evaluation`, tracking `origin/evaluation`, at commit `c003572` (`Security and final validation`). The working tree was clean before evidence creation. Node and npm were available; local dependencies were present. The environment reported Node `v24.11.0` and npm `11.6.1`. Initial command launches through the PowerShell/cmd wrapper failed to spawn the Tailwind Oxide native binding (`spawn EPERM`) before checks began. Direct executions from the project workspace succeeded: typecheck exited 0, all 20 test files / 140 tests passed, build exited 0, and `git diff --check` exited 0. The initial launch issue is therefore treated as invocation-context/environment friction rather than an application defect. Clean captured summaries of the successful executions are in `evidence/logs/`.
 
-The prior Phase 2 report records 20 files and 140 passing tests, a successful build and typecheck, and SDK/Vite warnings. These are historical results and were not reproduced in this run. No live service, browser, AI request, deployment, or hosted Worker was used. Screenshot capture and browser automation are unavailable in this Codex environment; screenshots are pending manual capture.
+The Phase 2 report's 20-file / 140-test result was independently reproduced in this assignment and again during this review. No live service, browser, AI request, deployment, or hosted Worker was used. Screenshot capture and browser automation are unavailable in this Codex environment; screenshots are pending manual capture.
 
 ## A.3 Testing Methodology and Levels
 
@@ -49,13 +49,13 @@ The test inventory provides some automated evidence for authentication context, 
 | IT-12 | Public sharing, unsharing and privacy isolation | Mock owner/public records and asset calls | Public serialization removes private data; unshare revokes public access | Source/mock evidence exists; hosted ACL/cache revocation after unshare is unverified. **BLOCKED live** | Worker tests, Phase 2 security review |
 | IT-13 | JSON and CSV exports | Fixture-backed exports with private values/formula-leading strings | Valid files; redaction and CSV formula guarding | Export rules covered in research/fidelity tests; manual artifact inspection pending. **BLOCKED live** | `test/research-evaluation.test.ts`, `test/fidelity-evaluation.test.ts` |
 
-“Blocked live” records the missing live execution; it is not a failing mock result. No current suite result is available because the test runner failed to initialize.
+“Blocked live” records the missing live-service execution; it is not a failing mock result. The automated Vitest suite ran successfully, but does not verify live Puter services.
 
 ## A.5 System Testing
 
 The requested end-to-end workflow—authentication → upload → project creation → AI analysis → human approval → design configuration → enhanced generation → render versioning → fidelity assessment → research dashboard → export—has not been executed end to end. Existing tests cover fragments and simulated combinations. Each live stage needs browser interaction and, at analysis/generation steps, an explicitly authorized AI call. This run made no such requests.
 
-Baseline generation is represented in mocked prompt/workflow tests. Project retrieval after refresh, actual invalid file rejection, AI-provider failures, live storage failures, quota exhaustion, cross-account denial, share revocation, responsive behavior, keyboard access and actual exports require the browser checklist. Failure injection is present in selected mocked route paths, but does not establish service recovery. SSR runtime validation is also unexecuted because build initialization failed.
+Baseline generation is represented in mocked prompt/workflow tests. Project retrieval after refresh, actual invalid file rejection, AI-provider failures, live storage failures, quota exhaustion, cross-account denial, share revocation, responsive behavior, keyboard access and actual exports require the browser checklist. Failure injection is present in selected mocked route paths, but does not establish service recovery. The production client and SSR bundles built successfully; starting the artifact in a host and exercising runtime routes remain untested.
 
 ## A.6 Acceptance Testing
 
@@ -82,7 +82,9 @@ The code review identifies unresolved risks documented in the Phase 2 security r
 
 | Finding | Classification | Evidence-based interpretation |
 |---|---|---|
-| Tailwind native binding cannot be loaded; `spawn EPERM` | Confirmed environment blocker | Reproduced across typecheck, test and build initialization; no source defect established |
+| Initial wrapped command launch could not spawn Tailwind native binding (`spawn EPERM`) | Transient invocation/environment issue | Occurred only on initial wrapped invocation; direct workspace executions passed without dependency/source changes |
+| Broad fallback behavior in `analyzeFloorPlan()` | Source-reviewed reliability concern; not a reproduced runtime defect | `lib/ai.action.ts` returns a minimal fallback for broad output/parse and otherwise unexpected caught errors. This can conceal provider/network/runtime failures as a valid-looking empty analysis; no live provider failure was induced |
+| Visualizer project-loading effect does not handle rejected `getProjectById()` | Source-reviewed error-handling concern; not a reproduced runtime defect | `app/routes/visualizer.$id.tsx` invokes `loadProject()` without catch/finally. A rejected load may become an unhandled promise rejection and leave `isProjectLoading` true; no live storage rejection was induced |
 | Multi-call KV and asset writes can partially persist | Confirmed architectural limitation | Source review documents separate operations without transaction/CAS guarantees; recovery behavior not live-tested |
 | Generation lock release is get/decrement and may race after TTL/reacquisition | Potential concurrency risk | Source-level operation sequence; not reproduced under real concurrency |
 | AI/model or downstream upload/commit failures may consume quota after authorization | Source-observed limitation | No refund/reconciliation behavior for every downstream failure; not measured live |
@@ -97,7 +99,7 @@ No application bug is claimed as corrected by this assignment. See existing `doc
 
 ## A.9 Corrective Actions and Outstanding Work
 
-1. Resolve or characterize the local Tailwind Oxide binding/permission failure in an authorized development environment; rerun the exact commands without changing application code solely to mask the issue.
+1. If `spawn EPERM` recurs in the normal VS Code project terminal, characterize that shell/process environment; direct workspace runs passed in this review.
 2. Execute the 26 browser cases in order where safe. Use an isolated test project and avoid private real plans. Do not run AI cases without explicit quota authorization; no automatic retries.
 3. Use a second controlled account/private session for isolation and revocation tests. Confirm behavior with deployed Worker version and hosting configuration before claiming live security.
 4. Complete manual export inspection, keyboard/accessibility review, responsiveness and restart/retrieval checks.
@@ -106,6 +108,6 @@ No application bug is claimed as corrected by this assignment. See existing `doc
 
 ## A.10 Evaluation of Testing Effectiveness
 
-The existing suite is broad across application logic and UI surfaces, and its separation of mock behavior from live service claims is methodologically appropriate. However, automated effectiveness could not be evaluated in this run because the runner never initialized. Even when executable, fixture tests cannot establish identity-provider behavior, ACL isolation, service availability, quota billing, cache revocation, real model quality, deployment compatibility or browser accessibility. The manual matrix targets these gaps but remains unexecuted.
+The existing suite is broad across application logic and UI surfaces, and its separation of mock behavior from live service claims is methodologically appropriate. The successful run establishes that the current mocked/unit/component suite passes in this environment. Fixture tests cannot establish identity-provider behavior, ACL isolation, service availability, quota billing, cache revocation, real model quality, deployed runtime compatibility or browser accessibility. The manual matrix targets these gaps and remains unexecuted.
 
 Comprehensive layered testing improves reliability by checking rules before integration, stability by exercising failures and reloads, and security by testing owner boundaries and serialization. Reproducible, versioned render/evaluation records support research integrity and user confidence when inputs, model identifiers, prompts, rubric versions and limitations are retained. These benefits depend on evidence that distinguishes simulation from live results; the current package therefore reports blocked runs and pending acceptance work plainly.

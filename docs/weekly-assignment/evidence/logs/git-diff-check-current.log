@@ -1,0 +1,7 @@
+COMMAND: git diff --check
+STARTED: 2026-10-21 17:06 UTC
+DURATION: 0.755 s
+
+(no output; exit code 0)
+
+EXIT_CODE: 0

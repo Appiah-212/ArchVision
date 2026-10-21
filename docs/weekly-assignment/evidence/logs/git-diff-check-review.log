@@ -1,0 +1,7 @@
+COMMAND: git diff --check
+EXIT_CODE: 0
+
+warning: in the working copy of 'docs/weekly-assignment/evidence-index.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/weekly-assignment/manual-acceptance-checklist.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/weekly-assignment/part-a-system-testing-report.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/weekly-assignment/test-case-matrix.md', LF will be replaced by CRLF the next time Git touches it

@@ -1,0 +1,73 @@
+COMMAND: npm run build
+EXIT_CODE: 0
+
+
+> build
+> react-router build
+
+Using Vite Environment API
+vite v8.3.0 building client environment for production...
+transforming...
+✓ 2195 modules transformed.
+rendering chunks...
+computing gzip size...
+build/client/.vite/manifest.json                          3.10 kB │ gzip:   0.59 kB
+build/client/assets/root-DCIAG1qA.css                   107.09 kB │ gzip:  11.93 kB
+build/client/assets/GenerationModeSelector-Ij1y0Aeu.js    1.00 kB │ gzip:   0.39 kB
+build/client/assets/Navbar-DjrKODTz.js                    1.23 kB │ gzip:   0.54 kB
+build/client/assets/button-CzkciM_A.js                    3.66 kB │ gzip:   1.76 kB
+build/client/assets/home-BFtJEMeT.js                      7.39 kB │ gzip:   2.99 kB
+build/client/assets/dist-Ds5jJLxM.js                      8.86 kB │ gzip:   3.29 kB
+build/client/assets/root-t6Kna76d.js                     11.59 kB │ gzip:   4.69 kB
+build/client/assets/research-BCLJ-S2u.js                 31.21 kB │ gzip:   8.13 kB
+build/client/assets/errorBoundaries-COr7DW7-.js          32.14 kB │ gzip:  11.29 kB
+build/client/assets/visualizer._id-B7AZ9Tmu.js           62.12 kB │ gzip:  17.60 kB
+build/client/assets/jsx-runtime-C9NZUgS-.js              88.63 kB │ gzip:  29.43 kB
+build/client/assets/entry.client-CB4R8ZiN.js            214.77 kB │ gzip:  67.17 kB
+build/client/assets/puter.action-CXoxvPSs.js            464.65 kB │ gzip: 122.22 kB
+
+[33m[COMMONJS_VARIABLE_IN_ESM] [0mThe CommonJS `module` variable is treated as a global variable in an ECMAScript module and may not work as expected
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m node_modules/@heyputer/puter.js/src/lib/polyfills/localStorage.js:84:5 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m84 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0mmodule[38;5;249m.[0m[38;5;249me[0m[38;5;249mx[0m[38;5;249mp[0m[38;5;249mo[0m[38;5;249mr[0m[38;5;249mt[0m[38;5;249ms[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m [0m[38;5;249ml[0m[38;5;249mo[0m[38;5;249mc[0m[38;5;249ma[0m[38;5;249ml[0m[38;5;249mS[0m[38;5;249mt[0m[38;5;249mo[0m[38;5;249mr[0m[38;5;249ma[0m[38;5;249mg[0m[38;5;249me[0m[38;5;249mM[0m[38;5;249me[0m[38;5;249mm[0m[38;5;249mo[0m[38;5;249mr[0m[38;5;249my[0m[38;5;249m;[0m
+ [38;5;240m   │[0m     ───┬──  
+ [38;5;240m   │[0m        ╰──── 
+ [38;5;240m   │[0m 
+ [38;5;246m89 │[0m export[38;5;249m [0m[38;5;249md[0m[38;5;249me[0m[38;5;249mf[0m[38;5;249ma[0m[38;5;249mu[0m[38;5;249ml[0m[38;5;249mt[0m[38;5;249m [0m[38;5;249ml[0m[38;5;249mo[0m[38;5;249mc[0m[38;5;249ma[0m[38;5;249ml[0m[38;5;249mS[0m[38;5;249mt[0m[38;5;249mo[0m[38;5;249mr[0m[38;5;249ma[0m[38;5;249mg[0m[38;5;249me[0m[38;5;249mM[0m[38;5;249me[0m[38;5;249mm[0m[38;5;249mo[0m[38;5;249mr[0m[38;5;249my[0m[38;5;249m;[0m
+ [38;5;240m   │[0m ───┬──  
+ [38;5;240m   │[0m    ╰──── This file is considered to be an ECMAScript module because of the `export` keyword here:
+[38;5;246m────╯[0m
+
+[33m[COMMONJS_VARIABLE_IN_ESM] [0mThe CommonJS `module` variable is treated as a global variable in an ECMAScript module and may not work as expected
+     [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m node_modules/@heyputer/puter.js/src/lib/polyfills/xhrshim.js:227:5 [38;5;246m][0m
+     [38;5;246m│[0m
+ [38;5;246m227 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0mmodule[38;5;249m.[0m[38;5;249me[0m[38;5;249mx[0m[38;5;249mp[0m[38;5;249mo[0m[38;5;249mr[0m[38;5;249mt[0m[38;5;249ms[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m [0m[38;5;249mX[0m[38;5;249mM[0m[38;5;249mL[0m[38;5;249mH[0m[38;5;249mt[0m[38;5;249mt[0m[38;5;249mp[0m[38;5;249mR[0m[38;5;249me[0m[38;5;249mq[0m[38;5;249mu[0m[38;5;249me[0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249mS[0m[38;5;249mh[0m[38;5;249mi[0m[38;5;249mm[0m[38;5;249m;[0m
+ [38;5;240m    │[0m     ───┬──  
+ [38;5;240m    │[0m        ╰──── 
+ [38;5;240m    │[0m 
+ [38;5;246m232 │[0m export[38;5;249m [0m[38;5;249md[0m[38;5;249me[0m[38;5;249mf[0m[38;5;249ma[0m[38;5;249mu[0m[38;5;249ml[0m[38;5;249mt[0m[38;5;249m [0m[38;5;249mX[0m[38;5;249mM[0m[38;5;249mL[0m[38;5;249mH[0m[38;5;249mt[0m[38;5;249mt[0m[38;5;249mp[0m[38;5;249mR[0m[38;5;249me[0m[38;5;249mq[0m[38;5;249mu[0m[38;5;249me[0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249mS[0m[38;5;249mh[0m[38;5;249mi[0m[38;5;249mm[0m[38;5;249m;[0m
+ [38;5;240m    │[0m ───┬──  
+ [38;5;240m    │[0m    ╰──── This file is considered to be an ECMAScript module because of the `export` keyword here:
+[38;5;246m─────╯[0m
+
+✓ built in 3.84s
+[33m[PLUGIN_TIMINGS] [0mJavaScript callbacks ran for 3.2s of this 3.8s build (83%).
+2 callbacks are listed without a time. Their calls overlapped, so the time inside one call includes work from other calls. To find their cost, profile the build with `node --cpu-prof`:
+  - plugin react-router:dot-server resolveId (6447 calls)
+  - plugin react-router:build-client-route transform (2195 calls)
+See https://rolldown.rs/reference/InputOptions.checks#bundlertimings for more details.
+
+vite v8.3.0 building ssr environment for production...
+transforming...
+✓ 31 modules transformed.
+rendering chunks...
+
+✓ 1 asset cleaned from React Router server build.
+build\server\assets\server-build-DCIAG1qA.css
+
+computing gzip size...
+build/server/.vite/manifest.json                 0.22 kB │ gzip:  0.15 kB
+build/server/assets/server-build-DCIAG1qA.css  107.09 kB │ gzip: 11.93 kB
+build/server/index.js                          270.69 kB │ gzip: 57.95 kB
+
+✓ built in 540ms
