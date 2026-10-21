@@ -1,10 +1,47 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useOutletContext, useParams } from "react-router"
-import { generate3DView } from "../../lib/ai.action";
+import {
+    analyzeFloorPlan,
+    generate3DView,
+    GENERATION_MODEL_IDENTIFIER,
+} from "../../lib/ai.action";
 import { Box, Copy, Download, RefreshCcw, Share2, X } from "lucide-react";
 import Button from "../../components/ui/button";
-import { authorizeProjectGeneration, createProject, getProjectById, shareProject, unshareProject } from "../../lib/puter.action";
-import { ReactCompareSlider, ReactCompareSliderImage } from "react-compare-slider";
+import {
+    authorizeFloorPlanAnalysis,
+    authorizeProjectGeneration,
+    commitRenderVersion,
+    deleteUncommittedRenderVersionAsset,
+    getProjectById,
+    getFidelityEvaluations,
+    markProjectGenerationFailed,
+    saveFloorPlanAnalysis,
+    saveFidelityEvaluation,
+    saveRenderConfiguration,
+    shareProject,
+    setActiveRenderVersion,
+    updateRenderVersionDetails,
+    uploadRenderVersionAsset,
+    unshareProject,
+} from "../../lib/puter.action";
+import FloorPlanAnalysisPanel from "../../components/FloorPlanAnalysisPanel";
+import type { FloorPlanAnalysis } from "../../lib/floor-plan-analysis";
+import ArchitecturalDesignSettingsPanel from "../../components/ArchitecturalDesignSettingsPanel";
+import GenerationModeSelector from "../../components/GenerationModeSelector";
+import RenderComparisonPanel from "../../components/RenderComparisonPanel";
+import RenderHistoryPanel from "../../components/RenderHistoryPanel";
+import StructuralFidelityPanel from "../../components/StructuralFidelityPanel";
+import type { FidelityEvaluation } from "../../lib/fidelity-evaluation";
+import type { RenderConfiguration } from "../../lib/render-configuration";
+import { isRenderConfiguration } from "../../lib/render-configuration";
+import {
+    getEnhancedGenerationReadiness,
+    isGenerationInProgress,
+    shouldAutomaticallyGenerate,
+} from "../../lib/generation-workflow";
+import type { GenerationMetadata, GenerationMode } from "../../lib/generation-types";
+import { ENHANCED_PROMPT_TEMPLATE_VERSION } from "../../lib/generation-prompt";
+import { getRenderVersions } from "../../lib/render-version";
 
 const VisualizerId = () => {
     const { id } = useParams();
@@ -14,6 +51,7 @@ const VisualizerId = () => {
    
 
     const hasInitialGenerated = useRef(false);
+    const generationRequestInFlight = useRef(false);
 
     const [project, setProject] = useState<DesignItem | null>(null);
     const [isProjectLoading, setIsProjectLoading] = useState(true);
@@ -24,20 +62,86 @@ const VisualizerId = () => {
     const [sharingMessage, setSharingMessage] = useState("");
     const [shareUrl, setShareUrl] = useState("");
     const [currentImage, setCurrentImage] = useState<string | null>(null);
+    const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
+    const [selectedGenerationMode, setSelectedGenerationMode] =
+        useState<GenerationMode>("baseline");
+    const [isVersionSaving, setIsVersionSaving] = useState(false);
+    const [versionMessage, setVersionMessage] = useState("");
+    const [fidelityEvaluations, setFidelityEvaluations] = useState<FidelityEvaluation[]>([]);
+    const [fidelityLoadError, setFidelityLoadError] = useState<string | null>(null);
+    const [isVersionMessageError, setIsVersionMessageError] = useState(false);
     const canGenerateProject = Boolean(
         project?.ownerId && userId && project.ownerId === userId,
     );
     const canUnshareProject = project?.isPublic && project.ownerId === userId;
+    const renderVersions = project ? getRenderVersions(project) : [];
+    const selectedVersion = renderVersions.find(
+        ({ id: versionId }) => versionId === selectedVersionId,
+    ) ?? null;
+    const activeRenderImage = project
+        ? project.renderVersionImages?.[project.activeRenderVersionId ?? ""] ??
+            project.renderedImage ??
+            null
+        : null;
 
     const handleBack = () =>navigate('/');
 
-    const handleExport = async () => {
-        if (!currentImage) return;
+    const handleAnalyzeFloorPlan = async (): Promise<FloorPlanAnalysis> => {
+        if (!id || !project?.sourceImage) {
+            throw new Error("The project source image is unavailable.");
+        }
+        if (!canGenerateProject) {
+            throw new Error("Only the project owner can analyze this floor plan.");
+        }
+        await authorizeFloorPlanAnalysis(id);
+        return analyzeFloorPlan(project.sourceImage);
+    };
+
+    const handleApproveAnalysis = async (analysis: FloorPlanAnalysis) => {
+        if (!id || !project || !canGenerateProject) {
+            throw new Error("Only the project owner can save this floor-plan analysis.");
+        }
+        const saved = await saveFloorPlanAnalysis(id, analysis);
+        setProject((current) => current
+            ? {
+                ...current,
+                floorPlanAnalysis: saved.analysis,
+                approvedAnalysisRevision: saved.approvedAnalysisRevision,
+            }
+            : current);
+    };
+
+    const handleSaveRenderConfiguration = async (
+        configuration: RenderConfiguration,
+    ): Promise<RenderConfiguration> => {
+        if (!id || !project || !canGenerateProject) {
+            throw new Error("Only the project owner can save design settings.");
+        }
+        const savedConfiguration = await saveRenderConfiguration(id, configuration);
+        setProject((current) => current
+            ? { ...current, renderConfiguration: savedConfiguration }
+            : current);
+        return savedConfiguration;
+    };
+
+    const handleSaveFidelityEvaluation = async (evaluation: FidelityEvaluation, revisionOf?: string) => {
+        if (!id || !canGenerateProject) throw new Error("Only the project owner can save fidelity assessments.");
+        const payload = revisionOf ? { ...evaluation, revisionOf } : evaluation;
+        const saved = await saveFidelityEvaluation(id, payload);
+        setFidelityEvaluations((current) => current.some((item) => item.id === saved.id) ? current : [...current, saved]);
+        return saved;
+    };
+
+    const handleExport = async (
+        imageSource = currentImage,
+        versionNumber?: number,
+    ) => {
+        if (!imageSource) return;
 
         let downloadUrl: string | null = null;
 
         try {
-            const response = await fetch(currentImage);
+            const response = await fetch(imageSource);
             if (!response.ok) {
                 throw new Error(`Image download failed: ${response.status} ${response.statusText}`);
             }
@@ -54,7 +158,8 @@ const VisualizerId = () => {
 
             downloadUrl = URL.createObjectURL(image);
             link.href = downloadUrl;
-            link.download = `${safeName || 'ArchVision'}-render.${extension}`;
+            const versionSuffix = versionNumber ? `-version-${versionNumber}` : "";
+            link.download = `${safeName || 'ArchVision'}-render${versionSuffix}.${extension}`;
             document.body.appendChild(link);
             link.click();
             link.remove();
@@ -108,63 +213,159 @@ const VisualizerId = () => {
         }
     };
 
-    const runGeneration = async (item: DesignItem) => {
+    const runGeneration = async (
+        item: DesignItem,
+        requestedMode: GenerationMode = selectedGenerationMode,
+    ) => {
+        if (generationRequestInFlight.current) return;
         if (!id || !item.sourceImage) {
             setGenerationError("The project source image is unavailable.");
+            return;
+        }
+        if (isGenerationInProgress(item.generationMetadata)) {
+            setGenerationError("A generation request is already in progress for this project.");
             return;
         }
         if (!userId || item.ownerId !== userId) {
             setGenerationError("Only the project owner can generate a render.");
             return;
         }
+        const generationMode = requestedMode;
+        if (generationMode === "enhanced") {
+            const readiness = getEnhancedGenerationReadiness(
+                item.floorPlanAnalysis,
+                item.renderConfiguration,
+                true,
+            );
+            if (!readiness.ready) {
+                setGenerationError(readiness.missingPrerequisites.join(" "));
+                return;
+            }
+        }
 
+        generationRequestInFlight.current = true;
+        let authorizedTimestamp: string | null = null;
+        let authorizedVersionId: string | null = null;
+        let activeMetadata: GenerationMetadata | null = null;
         try {
             setIsProcessing(true);
             setGenerationError(null);
             
-            await authorizeProjectGeneration(id);
+            const authorization = await authorizeProjectGeneration(id, generationMode);
+            authorizedTimestamp = authorization.generationTimestamp;
+            authorizedVersionId = authorization.versionId;
+            const startingMetadata: GenerationMetadata = {
+                generationMode: authorization.generationMode,
+                modelIdentifier: GENERATION_MODEL_IDENTIFIER,
+                promptTemplateVersion: authorization.generationMode === "baseline"
+                    ? "archvision-baseline-v1"
+                    : ENHANCED_PROMPT_TEMPLATE_VERSION,
+                configurationSnapshot: authorization.configuration ?? null,
+                approvedAnalysisRevision: authorization.approvedAnalysisRevision,
+                generationTimestamp: authorization.generationTimestamp,
+                generationStatus: "generating",
+                versionId: authorization.versionId,
+                versionNumber: authorization.versionNumber,
+            };
+            activeMetadata = startingMetadata;
+            setProject((current) => current
+                ? { ...current, generationMetadata: startingMetadata }
+                : current);
 
             const aiStartTime = performance.now();
             let aiStatus = "FAILED";
             let result: Awaited<ReturnType<typeof generate3DView>>;
 
             try {
-            result = await generate3DView({
-                sourceImage: item.sourceImage
-            });
+                result = await generate3DView({
+                    sourceImage: item.sourceImage,
+                    generationMode: authorization.generationMode,
+                    analysis: authorization.analysis,
+                    configuration: authorization.configuration,
+                    approvedAnalysisRevision: authorization.approvedAnalysisRevision,
+                    generationTimestamp: authorization.generationTimestamp,
+                });
 
-            if (!result.renderedImage) {
-                throw new Error(
-                "The AI service returned no render. Please try again."
+                if (!result.renderedImage) {
+                    throw new Error("The AI service returned no render. Please try again.");
+                }
+
+                aiStatus = "SUCCESS";
+            } finally {
+                const aiDurationMs = performance.now() - aiStartTime;
+                console.info(
+                    `[ARCHVISION_METRIC] AI generation: ${aiDurationMs.toFixed(2)} ms | Status: ${aiStatus}`,
                 );
             }
 
-            aiStatus = "SUCCESS";
-            } finally {
-            const aiDurationMs = performance.now() - aiStartTime;
-
-            console.info(
-                `[ARCHVISION_METRIC] AI generation: ${aiDurationMs.toFixed(2)} ms | Status: ${aiStatus}`
-            );
-        }
-
-            const updatedItem = {
-                ...item,
-                renderedImage: result.renderedImage,
-                renderedPath: result.renderedPath,
-                timestamp: Date.now(),
-                ownerId: item.ownerId,
-                isPublic: item.isPublic ?? false,
-            };
-            const saved = await createProject({
-                item: updatedItem,
-                visibility: item.isPublic ? "public" : "private",
+            const imageAssetReference = await uploadRenderVersionAsset({
+                id,
+                versionId: authorization.versionId,
+                generationTimestamp: authorization.generationTimestamp,
+                image: result.renderedImage,
             });
-            if (!saved) throw new Error("The render was generated but could not be saved.");
-
-            setProject(saved);
-            setCurrentImage(saved.renderedImage || result.renderedImage);
+            const generationLatencyMs = result.generationMetadata.generationLatencyMs ??
+                Math.max(0, Math.round(performance.now() - aiStartTime));
+            try {
+                const saved = await commitRenderVersion({
+                    id,
+                    versionId: authorization.versionId,
+                    generationTimestamp: authorization.generationTimestamp,
+                    imageAssetReference,
+                    generationLatencyMs,
+                });
+                setProject(saved.project);
+                setSelectedVersionId(saved.version.id);
+                setCurrentImage(
+                    saved.project.renderVersionImages?.[saved.version.id] ??
+                    result.renderedImage,
+                );
+                setVersionMessage(`Version ${saved.version.versionNumber} was saved.`);
+                setIsVersionMessageError(false);
+            } catch (commitError) {
+                const refreshedProject = await getProjectById({ id });
+                const committedVersion = refreshedProject?.renderVersions?.find(
+                    ({ id: versionId }) => versionId === authorization.versionId,
+                );
+                if (refreshedProject && committedVersion) {
+                    setProject(refreshedProject);
+                    setSelectedVersionId(committedVersion.id);
+                    setCurrentImage(
+                        refreshedProject.renderVersionImages?.[committedVersion.id] ??
+                        result.renderedImage,
+                    );
+                    setVersionMessage(`Version ${committedVersion.versionNumber} was saved.`);
+                    setIsVersionMessageError(false);
+                    return;
+                }
+                try {
+                    await deleteUncommittedRenderVersionAsset({
+                        id,
+                        versionId: authorization.versionId,
+                        generationTimestamp: authorization.generationTimestamp,
+                        imageAssetReference,
+                    });
+                } catch (cleanupError) {
+                    console.error("Failed to clean up the uncommitted render image:", cleanupError);
+                }
+                throw commitError;
+            }
         } catch (error) {
+            if (authorizedTimestamp) {
+                try {
+                    await markProjectGenerationFailed(id, authorizedTimestamp);
+                    setProject((current) => current
+                        ? {
+                            ...current,
+                            generationMetadata: activeMetadata
+                                ? { ...activeMetadata, generationStatus: "failed" }
+                                : current.generationMetadata,
+                        }
+                        : current);
+                } catch (persistenceError) {
+                    console.error("Failed to record generation failure:", persistenceError);
+                }
+            }
             console.error("AI generation failed:", error);
             setGenerationError(
                 error instanceof Error
@@ -172,9 +373,86 @@ const VisualizerId = () => {
                     : "AI generation failed. Please try again.",
             );
         } finally {
+            generationRequestInFlight.current = false;
             setIsProcessing(false);
         }
     }
+
+    const handleSelectVersion = (versionId: string) => {
+        setGenerationError(null);
+        setSelectedVersionId(versionId);
+        const image = project?.renderVersionImages?.[versionId];
+        if (!image) {
+            setGenerationError("This private render image is unavailable.");
+            return;
+        }
+        setCurrentImage(image);
+    };
+
+    const handleSetActiveVersion = async (versionId: string) => {
+        if (!id || !canGenerateProject || isVersionSaving) return;
+        setIsVersionSaving(true);
+        setVersionMessage("");
+        setIsVersionMessageError(false);
+        try {
+            const updated = await setActiveRenderVersion(id, versionId);
+            setProject(updated);
+            setSelectedVersionId(versionId);
+            setCurrentImage(
+                updated.renderVersionImages?.[versionId] ??
+                    updated.renderedImage ??
+                    null,
+            );
+            setVersionMessage("Active render updated. No AI generation was started.");
+            setIsVersionMessageError(false);
+        } catch (error) {
+            console.error("Failed to activate render version:", error);
+            setVersionMessage(error instanceof Error
+                ? error.message
+                : "Unable to update the active render.");
+            setIsVersionMessageError(true);
+        } finally {
+            setIsVersionSaving(false);
+        }
+    };
+
+    const handleSaveVersionDetails = async (
+        versionId: string,
+        name: string,
+        notes: string,
+    ) => {
+        if (!id || !canGenerateProject || isVersionSaving) {
+            throw new Error("Only the project owner can edit render version details.");
+        }
+        setIsVersionSaving(true);
+        setVersionMessage("");
+        setIsVersionMessageError(false);
+        try {
+            const updated = await updateRenderVersionDetails(id, versionId, { name, notes });
+            setProject(updated);
+            setVersionMessage("Render version details saved.");
+            setIsVersionMessageError(false);
+        } catch (error) {
+            console.error("Failed to update render version details:", error);
+            setIsVersionMessageError(true);
+            throw error;
+        } finally {
+            setIsVersionSaving(false);
+        }
+    };
+
+    const handleGenerateSelectedMode = () => {
+        if (project) void runGeneration(project, selectedGenerationMode);
+    };
+
+    const handleExportSelectedVersion = () => {
+        if (!selectedVersion) return;
+        const selectedImage = project?.renderVersionImages?.[selectedVersion.id] ??
+            (selectedVersion.id === project?.activeRenderVersionId
+                ? project.renderedImage
+                : null);
+        void handleExport(selectedImage, selectedVersion.versionNumber);
+    };
 
    useEffect(() => {
     let isMounted = true;
@@ -191,8 +469,24 @@ const VisualizerId = () => {
 
       if (!isMounted) return;
 
+      const versions = fetchedProject ? getRenderVersions(fetchedProject) : [];
+      const selectedId = fetchedProject?.activeRenderVersionId ??
+        versions[versions.length - 1]?.id ??
+        null;
       setProject(fetchedProject);
-      setCurrentImage(fetchedProject?.renderedImage || null);
+      setSelectedVersionId(selectedId);
+      setSelectedGenerationMode(
+        versions.find(({ id: versionId }) => versionId === selectedId)?.generationMode ??
+            fetchedProject?.generationMode ??
+            "baseline",
+      );
+      setCurrentImage(
+        (selectedId && fetchedProject?.renderVersionImages?.[selectedId]) ||
+            fetchedProject?.renderedImage ||
+            null,
+      );
+      setVersionMessage("");
+      setIsVersionMessageError(false);
       setGenerationError(null);
       setShareUrl(fetchedProject?.isPublic
         ? new URL(`/visualizer/${encodeURIComponent(id)}`, window.location.origin).toString()
@@ -209,6 +503,23 @@ const VisualizerId = () => {
   }, [id]);
 
   useEffect(() => {
+    let isMounted = true;
+    setFidelityEvaluations([]);
+    setFidelityLoadError(null);
+    if (!id || !userId || project?.id !== id || project.ownerId !== userId) return () => { isMounted = false; };
+
+    getFidelityEvaluations(id).then((evaluations) => {
+      if (isMounted) setFidelityEvaluations(evaluations);
+    }).catch((error) => {
+      if (!isMounted) return;
+      console.error("Failed to load private fidelity assessments:", error);
+      setFidelityEvaluations([]);
+      setFidelityLoadError(error instanceof Error ? error.message : "Unable to reload saved evaluations.");
+    });
+    return () => { isMounted = false; };
+  }, [id, userId, project?.id, project?.ownerId]);
+
+  useEffect(() => {
     if (
       isProjectLoading ||
       hasInitialGenerated.current ||
@@ -218,13 +529,19 @@ const VisualizerId = () => {
       return;
 
     if (project.renderedImage) {
-      setCurrentImage(project.renderedImage);
+      const activeVersionId = project.activeRenderVersionId ?? selectedVersionId;
+      setCurrentImage(
+        (activeVersionId && project.renderVersionImages?.[activeVersionId]) ||
+            project.renderedImage,
+      );
       hasInitialGenerated.current = true;
       return;
     }
 
     hasInitialGenerated.current = true;
-    void runGeneration(project);
+    if (shouldAutomaticallyGenerate(project)) {
+        void runGeneration(project);
+    }
   }, [project, isProjectLoading, canGenerateProject]);
     return (
                     
@@ -243,6 +560,11 @@ const VisualizerId = () => {
             </nav>
 
             <section className="content">
+                {!project && !isProjectLoading && (
+                    <p role="alert" className="note">
+                        The project could not be loaded. It may not exist or may be private to another owner.
+                    </p>
+                )}
                 <div className="panel">
 
                     <div className="panel-header">
@@ -260,7 +582,7 @@ const VisualizerId = () => {
                         <div className="panel-actions">
                             <Button
                                 size="sm"
-                                onClick={handleExport}
+                                onClick={() => void handleExport()}
                                 className="export"
                                 disabled={!currentImage}
                             >
@@ -273,7 +595,7 @@ const VisualizerId = () => {
                                 className="share"
                                 disabled={
                                     !project ||
-                                    !currentImage ||
+                                    !activeRenderImage ||
                                     isProjectLoading ||
                                     isProcessing ||
                                     isSharing ||
@@ -285,7 +607,7 @@ const VisualizerId = () => {
                                     ? "Updating..."
                                     : project?.isPublic
                                         ? canUnshareProject ? "Unshare" : "Shared"
-                                        : "Share"}
+                                        : "Share active render"}
 
                             </Button>
 
@@ -325,7 +647,7 @@ const VisualizerId = () => {
                         )}
 
                     </div>
-                    {project && !project.renderedImage && !canGenerateProject && (
+                    {project && renderVersions.length === 0 && !canGenerateProject && (
                         <p role="status" className="note">
                             Sign in as the project owner to generate a render.
                         </p>
@@ -333,13 +655,14 @@ const VisualizerId = () => {
                     {generationError && (
                         <div className="panel-actions">
                             <p role="alert" className="note">{generationError}</p>
-                            {project && canGenerateProject && (
+                            {project && canGenerateProject &&
+                                !isGenerationInProgress(project.generationMetadata) && (
                                 <Button
                                     size="sm"
-                                    onClick={() => void runGeneration(project)}
+                                    onClick={handleGenerateSelectedMode}
                                     disabled={isProcessing}
                                 >
-                                    Retry generation
+                                    Retry selected mode
                                 </Button>
                             )}
                         </div>
@@ -347,42 +670,109 @@ const VisualizerId = () => {
 
                 </div>
 
-                <div className="panel compare">
-                    <div className="panel-header">
-                        <div className="panel-meta">
-                            <p>Comparison</p>
-                            <h3>Before and After</h3>
-
+                {project && (
+                    <section className="generation-workflow" aria-labelledby="generation-workflow-title">
+                        <div>
+                            <p className="generation-workflow-eyebrow">Generation workflow</p>
+                            <h2 id="generation-workflow-title">
+                                {selectedGenerationMode === "enhanced" ? "Enhanced generation" : "Baseline generation"}
+                            </h2>
+                            <p>
+                                {selectedGenerationMode === "enhanced"
+                                    ? "The source plan, approved structural findings, and saved design preferences guide this conceptual render."
+                                    : "Uses the original fixed-prompt image-generation pipeline. Saved settings are recorded for research traceability but are not applied to baseline prompting."}
+                            </p>
                         </div>
-                        <div className="hint">Drag to compare</div>
-                    </div>
-
-                    <div className="compare-stage">
-                        {project?.sourceImage && currentImage ? (
-                            <ReactCompareSlider
-                                defaultValue={50}
-                                style={{ width: '100%', height: 'auto' }}
-                                itemOne={
-                                    <ReactCompareSliderImage src={project?.sourceImage} alt="before"
-                                    className="compare-img" />
-                                }
-                                 itemTwo={
-                                    <ReactCompareSliderImage src={currentImage} alt="after"
-                                    className="compare-img" />
-                                }
+                        {canGenerateProject && (
+                            <GenerationModeSelector
+                                value={selectedGenerationMode}
+                                onChange={setSelectedGenerationMode}
+                            />
+                        )}
+                        {selectedGenerationMode === "enhanced" ? (
+                            <EnhancedGenerationReadiness
+                                project={project}
+                                isOwner={canGenerateProject}
+                                isProcessing={isProcessing}
                             />
                         ) : (
-                            <div className="compare-fallback">
-                                {project?.sourceImage && (
-                                    <img src={project.sourceImage} alt="Before" className="compare-img" />
-                                )}
-
-                            </div>
+                            <p className="generation-workflow-state" role="status">
+                                {renderVersions.length > 0
+                                    ? `${renderVersions.length} retained render${renderVersions.length === 1 ? "" : "s"}. A new baseline version will preserve the previous renders.`
+                                    : isGenerationInProgress(project.generationMetadata)
+                                        ? "Baseline generation is in progress in another session."
+                                    : project.generationMetadata?.generationStatus === "failed"
+                                        ? "The last generation failed. You can retry or switch modes."
+                                        : "New baseline projects render automatically when opened by their owner."}
+                            </p>
                         )}
+                        <p className="generation-workflow-disclaimer">
+                            Generated images are conceptual visualizations, not verified CAD or BIM geometry.
+                            Prompting does not guarantee exact structural fidelity.
+                        </p>
+                    </section>
+                )}
 
-                    </div>
+                {project && (
+                    <FloorPlanAnalysisPanel
+                        approvedAnalysis={project.floorPlanAnalysis}
+                        isOwner={canGenerateProject}
+                        onAnalyze={handleAnalyzeFloorPlan}
+                        onApprove={handleApproveAnalysis}
+                    />
+                )}
 
-                </div>
+                {project && (
+                    <ArchitecturalDesignSettingsPanel
+                        savedConfiguration={project.renderConfiguration}
+                        isOwner={canGenerateProject}
+                        onSave={handleSaveRenderConfiguration}
+                    />
+                )}
+
+                <RenderHistoryPanel
+                    versions={renderVersions}
+                    versionImages={project?.renderVersionImages ?? {}}
+                    activeVersionId={project?.activeRenderVersionId ?? null}
+                    selectedVersionId={selectedVersionId}
+                    isOwner={canGenerateProject}
+                    isLoading={isProjectLoading}
+                    isGenerating={isProcessing ||
+                        isGenerationInProgress(project?.generationMetadata)}
+                    isSaving={isVersionSaving}
+                    statusMessage={versionMessage}
+                    statusIsError={isVersionMessageError}
+                    onSelect={handleSelectVersion}
+                    onSetActive={(versionId) => void handleSetActiveVersion(versionId)}
+                    onSaveDetails={handleSaveVersionDetails}
+                    onExport={handleExportSelectedVersion}
+                    onGenerate={handleGenerateSelectedMode}
+                />
+
+                <RenderComparisonPanel
+                    sourceImage={project?.sourceImage ?? ""}
+                    versions={renderVersions}
+                    versionImages={project?.renderVersionImages ?? {}}
+                    selectedVersionId={selectedVersionId}
+                />
+
+                {project && renderVersions.length > 0 && (
+                    <StructuralFidelityPanel
+                        projectId={project.id}
+                        projectName={project.name || `Residence ${project.id}`}
+                        sourceImage={project.sourceImage}
+                        sourceImageReference={project.sourcePath || project.sourceImage}
+                        analysis={project.floorPlanAnalysis}
+                        versions={renderVersions}
+                        images={project.renderVersionImages ?? {}}
+                        selectedVersionId={selectedVersionId}
+                        evaluations={fidelityEvaluations}
+                        loadError={fidelityLoadError}
+                        reviewerIdentifier={userId || "owner"}
+                        isOwner={canGenerateProject}
+                        onSave={handleSaveFidelityEvaluation}
+                    />
+                )}
 
             </section>
            
@@ -390,4 +780,56 @@ const VisualizerId = () => {
        
     )
 }
-export default VisualizerId
+
+const EnhancedGenerationReadiness = ({
+    project,
+    isOwner,
+    isProcessing,
+}: {
+    project: DesignItem;
+    isOwner: boolean;
+    isProcessing: boolean;
+}) => {
+    const readiness = getEnhancedGenerationReadiness(
+        project.floorPlanAnalysis,
+        project.renderConfiguration,
+        isOwner,
+    );
+    const configuration = isRenderConfiguration(project.renderConfiguration)
+        ? project.renderConfiguration
+        : null;
+    const status = isProcessing
+        ? "Generation in progress."
+        : isGenerationInProgress(project.generationMetadata)
+            ? "Generation is in progress in another session."
+        : project.generationMetadata?.generationStatus === "failed"
+            ? "The previous enhanced request failed. Resolve any errors and retry."
+            : project.generationMetadata?.generationStatus === "complete"
+                    ? "Previous enhanced render complete. You can generate another version."
+                : readiness.ready
+                    ? "Ready to generate."
+                    : "Not ready to generate.";
+
+    return (
+        <div className="generation-readiness">
+            <p className="generation-workflow-state" role="status">{status}</p>
+            <p>
+                Floor-plan analysis: {readiness.missingPrerequisites.includes(
+                    "Analyze and approve the floor-plan findings.",
+                ) ? "Not approved" : "Approved"}
+            </p>
+            <p>
+                Saved architectural style: {configuration?.architecturalStyle ?? "No valid saved settings"}
+            </p>
+            {!readiness.ready && (
+                <ul aria-label="Missing enhanced generation prerequisites">
+                    {readiness.missingPrerequisites.map((prerequisite) => (
+                        <li key={prerequisite}>{prerequisite}</li>
+                    ))}
+                </ul>
+            )}
+        </div>
+    );
+};
+
+export default VisualizerId;

@@ -27,6 +27,15 @@ interface DesignItem {
     sharedBy?: string | null;
     sharedAt?: string | null;
     isPublic?: boolean;
+    floorPlanAnalysis?: import("./lib/floor-plan-analysis").FloorPlanAnalysis;
+    renderConfiguration?: import("./lib/render-configuration").RenderConfiguration;
+    generationMode?: import("./lib/generation-types").GenerationMode;
+    generationMetadata?: import("./lib/generation-types").GenerationMetadata;
+    approvedAnalysisRevision?: number;
+    renderVersions?: import("./lib/render-version").RenderVersion[];
+    activeRenderVersionId?: string | null;
+    renderVersionImages?: Record<string, string>;
+    fidelityEvaluations?: import("./lib/fidelity-evaluation").FidelityEvaluation[];
 }
 
 interface DesignConfig {
@@ -116,6 +125,7 @@ interface StoreHostedImageParams {
     url: string;
     projectId: string;
     label: "source" | "rendered";
+    assetSuffix?: string;
 }
 
 interface CreateProjectParams {
@@ -126,4 +136,9 @@ interface CreateProjectParams {
 interface Generate3DViewParams {
     sourceImage: string;
     projectId?: string | null;
+    generationMode?: import("./lib/generation-types").GenerationMode;
+    analysis?: import("./lib/floor-plan-analysis").FloorPlanAnalysis;
+    configuration?: import("./lib/render-configuration").RenderConfiguration;
+    approvedAnalysisRevision?: number | null;
+    generationTimestamp?: string;
 }

@@ -82,6 +82,188 @@ Make sure to deploy the output of `npm run build`
 
 This template comes with [Tailwind CSS](https://tailwindcss.com/) already configured for a simple default starting experience. You can use whatever CSS framework you prefer.
 
+## AI floor-plan analysis
+
+On a project page, the owner can explicitly request a multimodal interpretation of the uploaded floor plan. When requested, the image is sent to Puter AI (Gemini 2.5 Flash) for structured findings on rooms, possible room functions, doors, windows, walls, spatial relationships, evidence, confidence estimates, and uncertainties. The application validates this response before presenting it for review.
+
+Owners can edit the draft and must select **Approve and save** to persist it. The approved analysis is stored with the owner's private project record; it is not included in the public shared-project copy. Analysis requests use the existing daily AI usage quota. Existing projects without an analysis remain valid.
+
+This is an AI-assisted conceptual interpretation, not verified CAD/BIM geometry or a substitute for professional review. Findings may be uncertain or unidentifiable, and the interface exposes those uncertainties for review.
+
+## Architectural design settings (Phase 2.2)
+
+The project visualizer includes owner-editable design controls for architectural style, flooring, wall finish, color palette, lighting, furniture, visualization perspective, and optional additional instructions. Settings are changed locally until **Save settings** is selected. **Reset to defaults** resets the draft; save it separately to persist those defaults. The panel reports saved and unsaved state and validates required custom values before saving.
+
+The data-driven presets are defined in `lib/render-configuration.ts`:
+
+| Preset | Floor | Walls | Palette | Lighting | Furniture | Perspective | Default aesthetic direction |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Modern | Hardwood | Painted plaster | Neutral | Natural daylight | Modern | Top-down 3D-style view | Clean contemporary lines, balanced contrast, and refined natural finishes |
+| Contemporary | Hardwood | Painted plaster | Warm earth tones | Natural daylight | Contemporary | Angled architectural view | Current, comfortable design with polished and tactile materials |
+| Minimalist | Concrete | Painted plaster | Monochrome | Bright studio | Minimalist | Top-down 3D-style view | Restrained forms, uncluttered rooms, and a quiet monochrome palette |
+| Scandinavian | Hardwood | Painted plaster | Natural | Natural daylight | Scandinavian | Isometric view | Light timber, soft natural colors, and functional furnishings |
+| Industrial | Concrete | Exposed brick | Monochrome | Bright studio | Modern | Angled architectural view | Expressive structural materials, tactile surfaces, and practical lighting |
+| Mediterranean | Ceramic tile | Stone | Warm earth tones | Natural daylight | Traditional | Isometric view | Sun-warmed surfaces, earthy colors, and natural stone accents |
+| Traditional | Hardwood | Wood paneling | Warm earth tones | Warm ambient | Traditional | Angled architectural view | Timeless detailing, warm materials, and familiar furniture arrangements |
+| Custom | Hardwood | Painted plaster | Neutral | Natural daylight | Modern | Top-down 3D-style view | A starting point for individually selected materials, colors, and lighting |
+
+Each preset supplies sensible defaults for all aesthetic controls. The other available choices are:
+
+- **Floor material:** Hardwood, Ceramic tile, Marble, Concrete, Vinyl, or Custom.
+- **Wall finish:** Painted plaster, Exposed brick, Concrete, Wood paneling, Stone, or Custom.
+- **Color palette:** Neutral, Warm earth tones, Cool tones, Monochrome, Natural, or Custom.
+- **Lighting:** Natural daylight, Warm ambient, Bright studio, Evening atmosphere, or Custom.
+- **Furniture:** Modern, Minimalist, Scandinavian, Traditional, Contemporary, or Custom.
+- **Perspective:** Top-down 3D-style view, Isometric view, or Angled architectural view.
+
+### Configuration schema and validation
+
+`RenderConfiguration` is a runtime-validated TypeScript model with `schemaVersion`, `architecturalStyle`, `flooringMaterial`, `wallFinish`, `colorPalette`, `lighting`, `furnitureStyle`, `perspective`, `customInstructions`, `customValues`, and `updatedAt`. `customValues` stores the user's descriptions when a control is set to Custom; each description is required for its selected Custom option and limited to 100 characters. `customInstructions` is optional and limited to 500 characters. The centralized option lists and schema version are checked on the client and independently on the trusted Worker; unknown fields and unsupported options are rejected.
+
+Safe defaults are Modern style, Hardwood flooring, Painted plaster walls, Neutral palette, Natural daylight, Modern furniture, and a Top-down 3D-style view. Switching a style preset applies its complete documented set of defaults and clears prior custom-value overrides.
+
+### Persistence, privacy, and compatibility
+
+Saving calls the authenticated Puter Worker endpoint, which validates the full configuration again and verifies ownership against the owner's private project record before updating it in owner-scoped Puter KV. It updates only the design configuration and project timestamp, preserving the approved floor-plan analysis and image references. Existing project saves also retain previously stored private fields omitted from partial updates. Storage errors are returned to the panel rather than reported as a successful save.
+
+Design settings and approved floor-plan analysis are private project metadata. They are omitted from public shared copies and public project responses. Older projects without a configuration remain supported; the panel displays safe defaults until the owner explicitly saves settings.
+
+### Structural and aesthetic data remain separate
+
+The approved Phase 2.1 analysis contains structural observations (rooms, walls, doors, windows, relationships, evidence, confidence, and uncertainty). The Phase 2.2 configuration contains aesthetic preferences only. Editing or saving aesthetic preferences does not modify structural analysis. Additional design instructions are untrusted visual preferences and are used only by Enhanced generation.
+
+## Phase 2.3 generation modes
+
+Choose a mode on the upload screen, before a new project opens:
+
+- **Baseline** remains the default. It uses the original Phase 1 fixed prompt and the original Puter image-generation options. New baseline projects continue to render automatically when the owner opens the visualizer. Existing projects with no stored mode are treated as baseline.
+- **Enhanced** is explicit opt-in. Uploading opens the project without starting image generation or spending generation quota. The owner can request analysis, edit and approve it, configure and save design preferences, review readiness, then explicitly start Enhanced generation.
+
+Enhanced readiness requires the owner's approved floor-plan analysis and a valid saved design configuration. Floor-plan analysis itself remains an explicit, quota-counted AI request; it is never run automatically. Enhanced image-generation authorization is requested only when the owner selects **Start enhanced generation**.
+
+### Structure-aware prompt construction
+
+`lib/generation-prompt.ts` builds an Enhanced prompt deterministically from validated project inputs. Its sections cover source-image primacy, approved observations, spatial constraints, uncertainty handling, architectural style, materials/furnishings, lighting/perspective, and conceptual-use constraints. Observations include room labels and functions, walls, doors, windows, relationships, evidence, and recorded uncertainty. Structural observations and the source image take precedence over aesthetic preferences. Unknown details are not converted into asserted dimensions or architectural facts.
+
+Analysis text and custom design text remain untrusted data. The builder JSON-encodes these values inside explicitly delimited data sections, sets a strict instruction hierarchy, revalidates the input schemas, and rejects prompts exceeding 24,000 characters. This limits and organizes model input; prompt construction cannot guarantee layout fidelity or prevent every model interpretation error.
+
+### Pre-generation, authorization, and persistence
+
+The Worker derives the generation mode and Enhanced inputs from the owner-scoped project record; client-supplied project IDs are only lookup keys and do not establish ownership. It validates the approved analysis/configuration, enforces the existing shared daily AI quota, and takes a per-project generation lock before the client invokes Puter. Duplicate active requests are rejected; the lock expires after 30 minutes if a browser disappears before reporting completion or failure. Generation errors are recorded as failed and can be retried. Settings and analysis cannot be changed while generation is active.
+
+The saved private render stores `generationMode`, `modelIdentifier`, `promptTemplateVersion`, `configurationSnapshot`, `approvedAnalysisRevision`, `generationTimestamp`, `generationStatus`, and measured `generationLatencyMs`. Existing `sourceImage` and `renderedImage` fields remain unchanged. A successful render cannot be overwritten by another generation. Private analysis, configuration, and generation metadata remain excluded from public project copies.
+
+## Phase 2.4 render versioning, history, and comparison
+
+### RenderVersion schema and creation
+
+Each successful generation creates an immutable `RenderVersion` record with a distinct ID, project ID, monotonically increasing project version number, private image asset reference, baseline/enhanced mode, model identifier, prompt-template version, configuration snapshot, approved-analysis revision and available analysis snapshot, creation timestamp, optional measured generation duration, completion status, and optional user name/notes. The runtime schema is defined in `lib/render-version.ts` and the Worker validates persisted records independently. Only the name and notes can be changed after creation.
+
+The owner selects Baseline or Enhanced in the visualizer and starts a new render. Baseline retains the Phase 2.3 fixed prompt; it records saved design and approved-analysis context when available, but does not apply those inputs to baseline prompting. Enhanced still requires approved analysis and saved configuration. The Worker authorizes the requested mode, assigns the version ID/number, checks the per-project generation lock, and charges the existing daily quota before any billable AI call. Image bytes are stored in private Puter filesystem assets; only references and metadata go into KV. A version is committed after its image asset is stored. Failed AI generation does not create a successful version, and failed persistence leaves earlier versions intact; uncommitted image cleanup is attempted.
+
+### Legacy projects and active render
+
+Projects with no render remain versionless. A project with only legacy `renderedImage`/`renderedPath` is adapted in memory into a stable, read-only Version 1 entry; reading it does not write a migration or consume quota. The next successful generation commits the legacy entry alongside the new version. No destructive migration is performed.
+
+`activeRenderVersionId` identifies the owner's selected active version. The existing `renderedImage` and `renderedPath` fields remain compatibility pointers to that selected private asset, so existing display/export/share functions continue to use one render. Selecting or activating a version only updates metadata and these compatibility pointers; it never starts AI generation or consumes quota.
+
+### History and comparison
+
+The visualizer's Render History panel shows retained thumbnails, version numbers/names, dates, mode/status, style, model, prompt-template version, approved-analysis revision, and measured duration. Owners may select a render for viewing, mark it active, rename it, edit notes, export it, or start another version. Metadata records input conditions so baseline/enhanced comparisons can be interpreted; different conditions are not asserted to be scientifically comparable.
+
+Comparison supports (A) the original uploaded floor plan versus any retained version and (B) any two retained versions. Version A and B can be selected independently. Images use contained sizing to preserve source proportions where possible. These visual comparisons are research aids only; ArchVision does not calculate structural fidelity scores.
+
+### Storage, privacy, sharing, and authorization
+
+Render image bytes stay in owner-scoped private Puter filesystem storage. Project/version metadata stays in Puter KV and contains no binary image contents. Worker writes verify the authenticated Puter profile owns the project; private version retrieval resolves the image through the stored project/version relationship, not a client-supplied filesystem path. The Worker checks version IDs, asset references, immutable generation metadata, and project ownership. AI authorization/quota and duplicate-generation locking remain Worker-controlled.
+
+Public project responses omit the private version collection, active version ID, generation metadata, floor-plan analysis, and saved settings. Sharing publishes the source and only the owner's explicitly active render; historical private versions are not copied to public hosting. Unsharing removes the hosted public assets and public KV record where Puter permits. Existing public links continue to show the currently published single render; changing the private active version does not silently republish it.
+
+### Research traceability and limitations
+
+Each version records its source project, generation mode, model, prompt-template version, generation timestamp/duration, saved configuration where available, approved analysis revision/snapshot where available, and outcome status. Baseline style/analysis context is labeled as traceability data and is not represented as input to baseline prompting. Failed attempts remain in project-level generation status rather than appearing as successful render versions.
+
+Puter KV offers read/write operations without a compare-and-swap transaction for project JSON. The Worker uses an atomic KV increment lock for generation authorization and validates the active authorization again before commit, but metadata updates (including activation and editable labels) remain read/modify/write operations and can race across tabs. If a write response is lost, the client reloads to detect a committed version before attempting cleanup; safe cleanup retains any asset already referenced by a version. Version numbers and lock semantics therefore rely on Puter's documented atomic increment behavior, not a multi-record transaction.
+
+Both modes generate conceptual images from raster floor plans, not verified CAD/BIM geometry, construction documents, measured dimensions, or professional design advice. Image generation can omit or alter features even when structural constraints are supplied. The system records experimental conditions but does not fabricate experimental results or claim structural fidelity.
+
+## Phase 2.5 structural fidelity evaluation
+
+### Objective and scope
+
+Phase 2.5 adds a human-reviewed, rubric-based structural fidelity assessment for comparing a generated conceptual visualization with its original raster floor plan and the approved interpretation available to that render version. It does not calculate geometric accuracy and does not call the image generation model or another AI evaluator. The approved interpretation is a reference aid, not ground truth. Photorealism and visual attractiveness are not rubric criteria.
+
+**Architectural fidelity scores are research-oriented visual assessments. They do not establish geometric accuracy, building-code compliance, or engineering suitability.**
+
+### Rubric and scoring
+
+Rubric `archvision-structural-fidelity-v1` applies the same six equally weighted criteria to baseline and enhanced renders:
+
+1. Room count consistency
+2. Room function consistency
+3. Spatial relationship consistency
+4. Major wall arrangement
+5. Door and window preservation
+6. Missing or invented features
+
+For each criterion, reviewers select `PRESERVED` (2), `PARTIALLY_PRESERVED` (1), `NOT_PRESERVED` (0), or `CANNOT_DETERMINE` (excluded). The score is `sum of awarded points / (2 × applicable criteria) × 100`. The panel displays applicable and unassessable counts. With zero applicable criteria, it reports `INSUFFICIENT_EVIDENCE` and no numeric score. The number of applicable criteria out of six is the score coverage. Reviewers can record evidence, visibility uncertainty, observations, discrepancies, and limitations. The result is a rubric-based structural fidelity assessment, not objectively verified architectural accuracy.
+
+### Records, workflow, and version association
+
+`FidelityEvaluation` and `FidelityCriterion` are defined and runtime-validated in `lib/fidelity-evaluation.ts`. Each record includes its project and exact `renderVersionId`, source-image asset reference, approved-analysis revision/snapshot, generation mode/model/prompt/configuration/version-time snapshot, rubric/method, reviewer identifier, timestamps, six criteria, computed score/counts/status, observations, discrepancies, limitations, and optional `revisionOf` link. The Worker recalculates score fields and verifies the evaluation's project, version, generation provenance, and source reference at save time. Later version metadata changes do not erase the stored provenance or prevent retrieval. A correction is saved as a new evaluation with a new ID and a link to the prior record; stored evaluations are not overwritten. Active-render changes do not alter these associations.
+
+In the visualizer, select a render version, inspect the original plan and that version's image/comparison, consult its saved approved-analysis snapshot when available, complete the rubric, and save. Prior records for that version can be reopened. For blinded review, use a study code as the reviewer identifier and avoid exposing mode metadata during the review session. The interface itself displays mode and metadata, so operational blinding requires a separate controlled review procedure. Reviewer identifiers support later agreement analysis; statistical benchmarking belongs to Phase 2.6.
+
+### Privacy and export
+
+Assessments are stored inside the owner's private project KV record. The authenticated Worker checks ownership on retrieval and save, and verifies that a referenced render version belongs to the same project. Public-project serialization excludes assessments; sharing a render does not publish its assessments. The existing private asset authorization remains responsible for displaying source and render images. Exports are generated in the browser from validated records: each prior assessment offers a JSON report (including generation metadata/configuration snapshot and rubric) and a CSV of ratings, notes, evidence, score, and coverage. Exports contain reviewer comments and should be handled as private research data.
+
+### Research limitations and Phase 2.6 preparation
+
+Use the same source plan and rubric version for controlled baseline/enhanced comparisons, retain all cannot-determine outcomes, and do not presume enhanced results score higher. Perspective may hide features; unobservable criteria are excluded instead of penalized. Legacy versions without an approved-analysis snapshot remain evaluable, but their missing reference is recorded as a limitation. Human judgments can vary between reviewers; records retain reviewer IDs and criterion-level evidence to support later agreement analysis. The current milestone does not provide blinded mode masking, statistical analysis, or research outcome claims. Phase 2.6 can build on these version-specific records to run controlled comparisons and agreement statistics.
+
 ---
 
 Built with ❤️ using React Router.
+
+## Phase 2.6 experimental evaluation and benchmarking
+
+Phase 2.6 implements private research dataset registration, append-only paired experiments, descriptive benchmarking, optional A/B-ordered qualitative review, and sanitized JSON/CSV export. The research question is whether enhanced floor-plan-aware generation produces higher human rubric-based structural fidelity than baseline generation on the same source plans. No experimental dataset or research result is bundled with the application. The directional hypothesis is protocol preparation, not a result. See [the experimental protocol](docs/phase-2.6-experimental-protocol.md) for dataset selection, conditions, review procedure, threats to validity, reproducibility checklist, and export data dictionary.
+
+### Data schema and association
+
+`lib/research-evaluation.ts` defines runtime-validated `DatasetRegistration`, `ResearchExperiment`, `PairedComparison`, `QualitativeReview`, and `ResearchWorkspace` records. A comparison references one registered anonymous plan, one exact baseline `RenderVersion`, one exact enhanced `RenderVersion`, optional version-specific fidelity evaluations, the randomized A/B display mapping, known uncontrolled differences, and limitations. Its experiment preserves protocol/rubric versions, model and prompt metadata, settings and approved-analysis revision snapshots, conditions, status, and notes. Image files and private floor-plan contents are not copied into research metadata.
+
+The authenticated Puter Worker stores workspace JSON at an owner-scoped key. It checks that registered source projects belong to the caller, both versions belong to the same project and have the expected generation mode, and each selected fidelity evaluation belongs to the matching version and rubric. Dataset records, experiment identities, and prior comparison core fields are retained; comparisons are append-only and a saved qualitative review cannot be overwritten. A baseline/enhanced selection is never inferred from the active render. Public project serialization does not include research workspace data, and sharing a render does not publish assessments.
+
+### Benchmark calculations
+
+The dashboard uses only validated stored records. Scores use the Phase 2.5 equal-weight rubric and exclude `CANNOT_DETERMINE`; zero applicable criteria is insufficient evidence and has no score. Coverage is applicable criteria / six. A paired difference is enhanced score minus baseline score and remains missing unless both evaluations have numeric scores. Criterion results are mean 0–2 points among assessable observations. The dashboard reports count, mean, median, minimum, maximum, sample standard deviation (only with two or more observations), missing observations, coverage, discrepancies, unassessable criteria, stored render-generation latency, retained generation outcomes, incomplete pairs, and current workspace retrieval latency. Coverage differences greater than one criterion are flagged.
+
+Results are descriptive only. Missing values are not converted to zero. Success rates include only retained project-history outcomes; historical failures may not be recoverable. Current retrieval latency is one workspace-load measurement, not a per-project performance benchmark. No statistical significance is calculated, and no superiority conclusion is generated.
+
+### Human workflow and dashboard
+
+Open **Research Evaluation** while signed in. Register an owner-created or permission-documented source plan using an anonymous plan identifier and record category, complexity, inclusion/exclusion criteria, and permission notes. For a pair, select the same source project, existing baseline and enhanced versions, and their optional existing fidelity assessments. Record uncontrolled conditions and limitations. The dashboard displays per-plan scores/coverage, paired differences, criterion summaries, discrepancy counts, generation latency/outcomes, and missing/incomplete evidence. Assessment details can be reopened; the selected render IDs keep history independent of the project's active version. No generation action is available on this page.
+
+The optional blind A/B panel hides baseline/enhanced labels in the review form and stores the randomized mapping. This is not a secure blinded study because mode metadata is available elsewhere in the owner interface. Qualitative comments and reviewer codes remain human-provided. The data structure can retain distinct reviewer identifiers for future inter-reviewer agreement analysis; agreement statistics are not part of Phase 2.6.
+
+### Export and protection
+
+Use **Export JSON** or **Export CSV** for the selected experiment. Exports include experiment/protocol/rubric identifiers, anonymous plan identifiers, exact render/evaluation IDs, generation mode/model/prompt/configuration/revision metadata, per-criterion ratings and comments, fidelity score/coverage, generation latency/status, paired difference, limitations, and missing-evidence flags. The export data dictionary is included in JSON and documented in the protocol. Raw project IDs/names, owner identifiers, private image references, and approved analysis snapshots are excluded. Reviewer notes can still be sensitive research data. Export files are downloaded locally by the browser and are not automatically published.
+
+### Research limitations
+
+The output is a conceptual image, not verified CAD/BIM geometry. Human assessment is subjective and affected by perspective, occlusion, and reviewer interpretation. The approved analysis is reference information, not ground truth. Generation runs can differ in prompt, settings, time, stochastic output, and other conditions. Small convenience samples limit generalization. Score coverage and all missing/unassessable observations must accompany score reporting. No experiments, observations, accuracy percentages, significance tests, or outcomes are fabricated. Saved experiment records remain in the workspace, while the dashboard is hidden until explicitly opened.
+
+## Phase 2.7 hardening and verification
+
+The final architecture, security review, research methodology, regression plan, manual validation matrix, and deployment checklist are documented here:
+
+- [Phase 2 final architecture](docs/phase-2-final-architecture.md)
+- [Security and privacy review](docs/phase-2-security-review.md)
+- [Research methodology and integrity](docs/phase-2-research-methodology.md)
+- [Regression and manual validation plan](docs/phase-2-regression-test-plan.md)
+- [Deployment readiness](docs/phase-2-deployment-readiness.md)
+
+Useful local checks are `npm run typecheck`, `npm run test:run`, `npm run build`, and `git diff --check`. Automated tests use mocks and do not make billable AI calls. `VITE_PUTER_WORKER_URL` is the client-visible Worker endpoint; do not place secrets in Vite variables. Phase 2.7 does not deploy the app or Worker.

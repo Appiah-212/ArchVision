@@ -6,6 +6,8 @@ import Upload from "../../components/Upload";
 import { useNavigate } from "react-router";
 import { useEffect, useRef, useState } from "react";
 import { createProject, getProjects } from "../../lib/puter.action";
+import type { GenerationMode } from "../../lib/generation-types";
+import GenerationModeSelector from "../../components/GenerationModeSelector";
 
 
 
@@ -19,9 +21,13 @@ export function meta({}: Route.MetaArgs) {
 export default function Home() {
   const navigate = useNavigate();
   const [projects, setProjects] = useState<DesignItem[]>([]);
+  const [generationMode, setGenerationMode] = useState<GenerationMode>("baseline");
   const isCreatingProjectRef = useRef(false);
+  const generationModeRef = useRef(generationMode);
+  generationModeRef.current = generationMode;
 
   const handleUploadComplete = async (file: File) => {
+    let previewUrl: string | undefined;
     try {
 
     
@@ -29,7 +35,7 @@ export default function Home() {
     isCreatingProjectRef.current = true;
     const newId = Date.now().toString();
     const name = `Residence ${newId}`;
-    const previewUrl = URL.createObjectURL(file);
+    previewUrl = URL.createObjectURL(file);
 
     const newItem = {
       id: newId,
@@ -38,6 +44,7 @@ export default function Home() {
       sourceFile: file,
       renderedImage: undefined,
       timestamp: Date.now(),
+      generationMode: generationModeRef.current,
     } satisfies DesignItem;
 
 
@@ -70,6 +77,7 @@ console.info(
 
     return true;
     } finally {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
       isCreatingProjectRef.current = false;
     }
   }
@@ -114,7 +122,8 @@ console.info(
           <div className="grid-overlay"/>
 
             <div className="upload-card">
-              <div className="upload-head">
+                <GenerationModeSelector value={generationMode} onChange={setGenerationMode} />
+                <div className="upload-head">
                 <div className="upload-icon">
                   <Layers className="icon"/>
 
@@ -142,10 +151,12 @@ console.info(
               {projects.map(({id, name, renderedImage, sourceImage, timestamp, isPublic, sharedBy})=> (
                 <div key={id} className="project-card group" onClick={() => navigate(`visualizer/${id}`)}>
               <div className="preview">
-                <img
-                src={renderedImage || sourceImage}
-                alt="Project"
-                />
+                {(renderedImage || sourceImage) && (
+                  <img
+                    src={renderedImage || sourceImage}
+                    alt="Project"
+                  />
+                )}
 
                 <div className="badge">
                   <span>{isPublic ? "Community" : "Private"}</span>
