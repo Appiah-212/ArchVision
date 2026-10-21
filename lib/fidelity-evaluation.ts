@@ -130,15 +130,15 @@ export const createFidelityEvaluation = (input: Pick<FidelityEvaluation, "id" | 
 
 export const getAnalysisForVersion = (version: RenderVersion, _current?: FloorPlanAnalysis) => version.approvedAnalysisSnapshot;
 
-export const fidelityEvaluationToCsv = (evaluation: FidelityEvaluation, projectName = "", renderVersion?: RenderVersion): string => {
+export const fidelityEvaluationToCsv = (evaluation: FidelityEvaluation, _projectName = "", _renderVersion?: RenderVersion): string => {
     const quote = (v: unknown) => {
         const raw = String(v ?? "");
-        const safe = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+        const safe = /^[\u0000-\u0020]*[=+\-@]/.test(raw) ? `'${raw}` : raw;
         return `"${safe.replaceAll('"', '""')}"`;
     };
     return [
-        ["Project name", projectName], ["Project ID", evaluation.projectId], ["Render Version ID", evaluation.renderVersionId], ["Version number", evaluation.generationProvenance.versionNumber], ["Generation mode", evaluation.generationProvenance.generationMode], ["Model", evaluation.generationProvenance.modelIdentifier], ["Prompt template", evaluation.generationProvenance.promptTemplateVersion], ["Configuration snapshot", JSON.stringify(evaluation.generationProvenance.configurationSnapshot)], ["Source image reference", evaluation.sourceImageReference], ["Approved analysis revision", evaluation.approvedAnalysisRevision ?? "unknown"], ["Rubric Version", evaluation.rubricVersion], ["Evaluation Method", evaluation.evaluationMethod], ["Reviewer", evaluation.reviewerIdentifier], ["Evaluation Date", evaluation.updatedAt], ["Overall Fidelity Score", evaluation.overallScore ?? "INSUFFICIENT_EVIDENCE"], ["Applicable Criteria", evaluation.applicableCriteria], ["Unassessable Criteria", evaluation.unassessableCriteria], ["Score coverage", `${evaluation.applicableCriteria}/6`],
+        ["Render Version ID", evaluation.renderVersionId], ["Version number", evaluation.generationProvenance.versionNumber], ["Generation mode", evaluation.generationProvenance.generationMode], ["Model", evaluation.generationProvenance.modelIdentifier], ["Prompt template", evaluation.generationProvenance.promptTemplateVersion], ["Approved analysis revision", evaluation.approvedAnalysisRevision ?? "unknown"], ["Rubric Version", evaluation.rubricVersion], ["Evaluation Method", evaluation.evaluationMethod], ["Evaluation Date", evaluation.updatedAt], ["Overall Fidelity Score", evaluation.overallScore ?? "INSUFFICIENT_EVIDENCE"], ["Applicable Criteria", evaluation.applicableCriteria], ["Unassessable Criteria", evaluation.unassessableCriteria], ["Score coverage", `${evaluation.applicableCriteria}/6`],
         ...evaluation.criteria.flatMap((c) => [[`${c.label} rating`, c.rating], [`${c.label} notes`, c.reviewerNotes], [`${c.label} evidence`, c.supportingEvidence.join("; ")], [`${c.label} visibility`, c.confidenceOrVisibilityNotes]]),
-        ["Observations", evaluation.observations.join("; ")], ["Discrepancies", evaluation.discrepancies.join("; ")], ["Limitations", evaluation.limitations.join("; ")], ["Approved analysis snapshot", JSON.stringify(evaluation.approvedAnalysisSnapshot ?? renderVersion?.approvedAnalysisSnapshot ?? null)],
+        ["Observations", evaluation.observations.join("; ")], ["Discrepancies", evaluation.discrepancies.join("; ")], ["Limitations", evaluation.limitations.join("; ")], ["Pseudonymization note", "Direct project and reviewer identifiers, private asset references, design settings, and analysis snapshots are omitted. Pseudonymization does not guarantee anonymity."],
     ].map((row) => row.map(quote).join(",")).join("\r\n");
 };

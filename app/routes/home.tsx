@@ -27,6 +27,7 @@ export default function Home() {
   generationModeRef.current = generationMode;
 
   const handleUploadComplete = async (file: File) => {
+    let previewUrl: string | undefined;
     try {
 
     
@@ -34,7 +35,7 @@ export default function Home() {
     isCreatingProjectRef.current = true;
     const newId = Date.now().toString();
     const name = `Residence ${newId}`;
-    const previewUrl = URL.createObjectURL(file);
+    previewUrl = URL.createObjectURL(file);
 
     const newItem = {
       id: newId,
@@ -76,6 +77,7 @@ console.info(
 
     return true;
     } finally {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
       isCreatingProjectRef.current = false;
     }
   }

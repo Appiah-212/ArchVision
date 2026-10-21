@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createEmptyFidelityCriteria, createFidelityEvaluation, scoreFidelityCriteria, validateFidelityEvaluation, FIDELITY_RUBRIC_VERSION } from "../lib/fidelity-evaluation";
+import { createEmptyFidelityCriteria, createFidelityEvaluation, fidelityEvaluationToCsv, scoreFidelityCriteria, validateFidelityEvaluation, FIDELITY_RUBRIC_VERSION } from "../lib/fidelity-evaluation";
 
 const make = (criteria = createEmptyFidelityCriteria()) => createFidelityEvaluation({
     id: "evaluation-1", projectId: "project-1", renderVersionId: "version-1",
@@ -33,5 +33,16 @@ describe("structural fidelity rubric", () => {
         const next = createFidelityEvaluation({ ...first, id: "evaluation-2", criteria: first.criteria, observations: [], discrepancies: [], limitations: [] }, "2026-10-21T00:00:00.000Z", first.id);
         expect(next).toMatchObject({ id: "evaluation-2", revisionOf: first.id, renderVersionId: first.renderVersionId });
         expect(first.id).not.toBe(next.id);
+    });
+    it("omits direct identifiers and private references from CSV research exports and guards formula cells", () => {
+        const evaluation = make();
+        evaluation.criteria[0].reviewerNotes = "   =HYPERLINK(\"https://example.invalid\")";
+        const csv = fidelityEvaluationToCsv(evaluation, "Private residence name");
+        expect(csv).not.toContain("project-1");
+        expect(csv).not.toContain("Private residence name");
+        expect(csv).not.toContain("reviewer-1");
+        expect(csv).not.toContain("archvision_private_asset:");
+        expect(csv).toContain("'   =HYPERLINK");
+        expect(csv).toContain("Pseudonymization does not guarantee anonymity");
     });
 });

@@ -38,12 +38,14 @@ export default function StructuralFidelityPanel({ projectId, projectName, source
         finally { setBusy(false); }
     };
     const exportReport = (item: FidelityEvaluation) => {
-        const versionRecord = versions.find((v) => v.id === item.renderVersionId);
-        const report = { projectName, projectId, renderVersion: { ...(versionRecord ?? {}), id: item.renderVersionId, ...item.generationProvenance }, evaluation: item, scoreCoverage: `${item.applicableCriteria}/6 applicable criteria`, rubric: FIDELITY_CRITERIA, scoring: "Sum of awarded points / maximum applicable points x 100; CANNOT_DETERMINE excluded.", warning: WARNING };
-        const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
-        const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `fidelity-${item.renderVersionId}-${item.id}.json`; link.click(); URL.revokeObjectURL(link.href);
-        const csv = new Blob([fidelityEvaluationToCsv(item, projectName, versionRecord)], { type: "text/csv;charset=utf-8" });
-        const csvLink = document.createElement("a"); csvLink.href = URL.createObjectURL(csv); csvLink.download = `fidelity-${item.renderVersionId}-${item.id}.csv`; csvLink.click(); URL.revokeObjectURL(csvLink.href);
+        const report = { renderVersion: { id: item.renderVersionId, versionNumber: item.generationProvenance.versionNumber, generationMode: item.generationProvenance.generationMode, modelIdentifier: item.generationProvenance.modelIdentifier, promptTemplateVersion: item.generationProvenance.promptTemplateVersion, renderCreatedAt: item.generationProvenance.renderCreatedAt }, evaluation: { ...item, projectId: undefined, sourceImageReference: undefined, reviewerIdentifier: undefined, approvedAnalysisSnapshot: undefined, generationProvenance: { ...item.generationProvenance, configurationSnapshot: undefined } }, scoreCoverage: `${item.applicableCriteria}/6 applicable criteria`, rubric: FIDELITY_CRITERIA, scoring: "Sum of awarded points / maximum applicable points x 100; CANNOT_DETERMINE excluded.", privacyNote: "Direct project and reviewer identifiers, private asset references, design settings, and analysis snapshots are omitted. Pseudonymization does not guarantee anonymity.", warning: WARNING };
+        const download = (blob: Blob, fileName: string) => {
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a"); link.href = url; link.download = fileName; link.click();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        };
+        download(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }), `fidelity-${item.renderVersionId}-${item.id}.json`);
+        download(new Blob([fidelityEvaluationToCsv(item)], { type: "text/csv;charset=utf-8" }), `fidelity-${item.renderVersionId}-${item.id}.csv`);
     };
     return <section className="fidelity-panel" aria-labelledby="fidelity-title">
         <header><h2 id="fidelity-title">Structural fidelity evaluation</h2><p>{WARNING}</p></header>

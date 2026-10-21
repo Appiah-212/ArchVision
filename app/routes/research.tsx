@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useOutletContext } from "react-router";
+import { useLocation, useNavigate, useOutletContext } from "react-router";
 import Navbar from "../../components/Navbar";
 import { ReactCompareSlider, ReactCompareSliderImage } from "react-compare-slider";
 import { getProjectById, getResearchWorkspace, saveResearchWorkspace } from "../../lib/puter.action";
@@ -10,11 +10,13 @@ import type { FloorPlanAnalysis } from "../../lib/floor-plan-analysis";
 const Research = () => {
   const { isSignedIn, signIn } = useOutletContext<AuthContext>();
   const navigate = useNavigate();
+  const location = useLocation();
   const [data, setData] = useState<ResearchWorkspaceResponse | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [sourceProjectId, setSourceProjectId] = useState("");
   const [selectedExperimentId, setSelectedExperimentId] = useState("");
+  const [showDashboard, setShowDashboard] = useState(false);
   const [preview, setPreview] = useState<{ source: string; a: string; b: string; analysis: FloorPlanAnalysis | null; analysisRevision: number | null } | null>(null);
   const [previewPairId, setPreviewPairId] = useState("");
   const [reviewerCode, setReviewerCode] = useState("");
@@ -29,6 +31,7 @@ const Research = () => {
     finally { setBusy(false); }
   };
   useEffect(() => { if (isSignedIn) void load(); }, [isSignedIn]);
+  useEffect(() => { setShowDashboard(false); setSelectedExperimentId(""); setPreview(null); }, [location.key]);
   const project = data?.projects.find((p) => p.id === sourceProjectId);
   const projectRegistrations = data?.workspace.datasets.filter((d) => d.sourceProjectId === sourceProjectId && d.status === "APPROVED" && d.permissionStatus !== "PENDING" && d.permissionStatus !== "EXCLUDED") ?? [];
   const existingSelectedExperiment = data?.workspace.experiments.find((e) => e.experimentId === selectedExperimentId);
@@ -36,6 +39,11 @@ const Research = () => {
   const baselineVersions = (project?.versions ?? []).filter((v) => v.generationMode === "baseline");
   const enhancedVersions = (project?.versions ?? []).filter((v) => v.generationMode === "enhanced");
   const selectedExperiment = data?.workspace.experiments.find((e) => e.experimentId === selectedExperimentId);
+  useEffect(() => {
+    if (!preview) return;
+    const urls = new Set([preview.source, preview.a, preview.b].filter((url) => url.startsWith("blob:")));
+    return () => { for (const url of urls) URL.revokeObjectURL(url); };
+  }, [preview]);
   const benchmark = useMemo(() => selectedExperiment && data ? calculateExperimentBenchmark(selectedExperiment, data.workspace, data.projects, data.retrievalLatencyMs) : null, [selectedExperiment, data]);
   const projectsWithWarnings = data?.projects.filter((p) => p.warnings?.length) ?? [];
   const warningKinds = new Set(projectsWithWarnings.flatMap((p) => p.warnings ?? []).map((warning) => /assessment/i.test(warning) ? "fidelity assessment history" : "render history"));
@@ -78,7 +86,9 @@ const Research = () => {
   const exportFile = (kind: "json" | "csv") => {
     if (!data || !selectedExperiment || !benchmark) return;
     const text = kind === "json" ? JSON.stringify(experimentExport(selectedExperiment, benchmark, data.workspace, data.projects), null, 2) : experimentExportCsv(selectedExperiment, data.workspace, data.projects);
-    const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([text], { type: kind === "json" ? "application/json" : "text/csv;charset=utf-8" })); link.download = `archvision-${selectedExperiment.experimentId}.${kind}`; link.click(); URL.revokeObjectURL(link.href);
+    const url = URL.createObjectURL(new Blob([text], { type: kind === "json" ? "application/json" : "text/csv;charset=utf-8" }));
+    const link = document.createElement("a"); link.href = url; link.download = `archvision-${selectedExperiment.experimentId}.${kind}`; link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   const loadBlindPreview = async (pair: PairedComparison) => {
     const sourceProject = await getProjectById({ id: pair.sourceProjectId }) as (DesignItem & { renderVersionImages?: Record<string, string> }) | null;
@@ -100,7 +110,7 @@ const Research = () => {
 
   if (!isSignedIn) return <><Navbar /><main className="research-page"><h1>Research Evaluation</h1><p>Sign in as the project owner to access private research records.</p><button onClick={() => void signIn()}>Sign in to research workspace</button></main></>;
   return <><Navbar /><main className="research-page">
-    <header className="research-header"><button onClick={() => navigate("/")}>Back to projects</button><div><p>ARCHVISION AI</p><h1>Research Evaluation</h1><span>Descriptive benchmarking from existing renders and human-reviewed assessments.</span></div><button disabled={busy} onClick={() => void load()}>{busy ? "Refreshing..." : "Refresh workspace data"}</button></header>
+    <header className="research-header"><button onClick={() => navigate("/")}>Back to projects</button><div><p>ARCHVISION AI</p><h1>Research Evaluation</h1><span>Descriptive benchmarking from existing renders and human-reviewed assessments.</span></div><div className="research-actions"><button type="button" disabled={!selectedExperiment} onClick={() => setShowDashboard((visible) => !visible)}>{showDashboard ? "Hide experiment dashboard" : "Show experiment dashboard"}</button><button disabled={busy} onClick={() => void load()}>{busy ? "Refreshing..." : "Refresh workspace data"}</button></div></header>
     <p className="research-warning" role="note"><strong>Research limitation:</strong> Architectural fidelity scores are research-oriented visual assessments. They do not establish geometric accuracy, building-code compliance, or engineering suitability.</p>
     {error && <p className="research-error" role="alert">{error}</p>}
     {busy && !data ? <p>Loading private research records...</p> : !data ? <section className="research-card"><h2>Research workspace unavailable</h2><p>{error || "No research records have been loaded."}</p></section> : <>
@@ -128,7 +138,7 @@ const Research = () => {
           </form>
         </div>
       </section>
-      {selectedExperiment && benchmark ? <section className="research-card"><div className="research-title-row"><div><h2>{selectedExperiment.experimentName}</h2><p>{selectedExperiment.researchQuestion}</p></div><div className="research-actions"><button onClick={() => exportFile("json")}>Download JSON report</button><button onClick={() => exportFile("csv")}>Download CSV report</button></div></div>
+      {showDashboard && selectedExperiment && benchmark ? <section className="research-card"><div className="research-title-row"><div><h2>{selectedExperiment.experimentName}</h2><p>{selectedExperiment.researchQuestion}</p></div><div className="research-actions"><button onClick={() => exportFile("json")}>Download JSON report</button><button onClick={() => exportFile("csv")}>Download CSV report</button></div></div>
         <label className="research-status">Experiment status<select aria-label="Set experiment status" value={selectedExperiment.experimentStatus} onChange={(e) => void persist({ ...data.workspace, experiments: data.workspace.experiments.map((x) => x.experimentId === selectedExperiment.experimentId ? { ...x, experimentStatus: e.target.value as typeof x.experimentStatus, updatedAt: new Date().toISOString() } : x) })}><option value="PLANNED">Planned</option><option value="IN_PROGRESS">In progress</option><option value="COMPLETE" disabled={!selectedExperiment.comparisons.length || benchmark.incompletePairs > 0}>Complete</option></select></label>
         <p className="research-method-note">Descriptive results only. Enhanced minus baseline is reported as a paired difference; this dashboard does not calculate statistical significance.</p>
         <div className="research-metrics"><Metric label="Paired evaluable plans" value={`${benchmark.matchedEvaluablePairs} / ${selectedExperiment.comparisons.length}`} /><Metric label="Baseline mean score" value={fmt(benchmark.baselineFidelity.mean, "%")} /><Metric label="Enhanced mean score" value={fmt(benchmark.enhancedFidelity.mean, "%")} /><Metric label="Mean paired difference" value={fmt(benchmark.pairedDifferences.mean, " pp")} /><Metric label="Baseline coverage" value={fmt(benchmark.baselineCoverage.mean, "%")} /><Metric label="Enhanced coverage" value={fmt(benchmark.enhancedCoverage.mean, "%")} /><Metric label="Baseline recorded success" value={benchmark.baselineGenerationSuccessRate === null ? "No observations" : `${benchmark.baselineGenerationSuccessRate.toFixed(1)}%`} /><Metric label="Enhanced recorded success" value={benchmark.enhancedGenerationSuccessRate === null ? "No observations" : `${benchmark.enhancedGenerationSuccessRate.toFixed(1)}%`} /><Metric label="Workspace retrieval latency" value={data.retrievalLatencyMs === null ? "Not measured" : `${data.retrievalLatencyMs} ms`} /></div>
@@ -139,7 +149,7 @@ const Research = () => {
         {selectedExperiment.comparisons.map((pair) => <details key={pair.pairId} className="research-details"><summary>Assessment details | {data.workspace.datasets.find((d) => d.registrationId === pair.registrationId)?.anonymousPlanIdentifier ?? "plan"}</summary>{[pair.baselineEvaluationRecordId, pair.enhancedEvaluationRecordId].map((evaluationId) => { const evaluation = data.projects.flatMap((p) => p.evaluations).find((e) => e.id === evaluationId); if (!evaluation) return <p key={evaluationId ?? "missing"}>No assessment is linked to this render.</p>; return <article key={evaluation.id}><h3>{humanize(evaluation.generationProvenance.generationMode)} | {evaluation.overallScore === null ? "Insufficient evidence" : `${evaluation.overallScore}%`} | coverage {evaluation.applicableCriteria}/6</h3>{evaluation.criteria.map((criterion) => <p key={criterion.criterionId}><strong>{criterion.label}: {humanize(criterion.rating)}</strong>{criterion.reviewerNotes && ` - ${criterion.reviewerNotes}`}{criterion.supportingEvidence.length > 0 && ` Evidence: ${criterion.supportingEvidence.join("; ")}`}{criterion.confidenceOrVisibilityNotes && ` Visibility: ${criterion.confidenceOrVisibilityNotes}`}</p>)}{evaluation.observations.map((observation, i) => <p key={`observation-${i}`}>Observation: {observation}</p>)}{evaluation.discrepancies.map((discrepancy, i) => <p key={`discrepancy-${i}`}>Discrepancy: {discrepancy}</p>)}{evaluation.limitations.map((limitation, i) => <p key={`limitation-${i}`}>Limitation: {limitation}</p>)}</article>; })}</details>)}
         <p>Unassessable criterion ratings across selected evaluations: {benchmark.unassessableCriteria}. Missing or incomplete pairs: {benchmark.incompletePairs}. Recorded successful/failed generations: {benchmark.recordedSuccesses}/{benchmark.recordedFailures}. Latency and success metrics include only outcomes retained in project history.</p>
         <details><summary>Provenance, known conditions and limitations</summary><p>Protocol {selectedExperiment.protocolVersion}; rubric {selectedExperiment.evaluationRubricVersion}. Models: {selectedExperiment.generationModelIdentifiers.join(", ") || "none"}; prompt templates: {selectedExperiment.promptTemplateVersions.join(", ") || "none"}.</p><p>Uncontrolled: {selectedExperiment.experimentalConditions.uncontrolledVariables.join("; ") || "none recorded"}</p><p>Limitations: {selectedExperiment.limitations.join("; ") || "No experiment-wide limitations recorded."}</p></details>
-      </section> : <section className="research-card"><h2>No experiments yet</h2><p>Register a permitted source plan and pair its existing baseline and enhanced renders to begin a pilot. No sample results are provided.</p></section>}
+      </section> : !data.workspace.experiments.length ? <section className="research-card"><h2>No experiments yet</h2><p>Register a permitted source plan and pair its existing baseline and enhanced renders to begin a pilot. No sample results are provided.</p></section> : null}
       {preview && selectedExperiment && <section className="research-card"><h2>Blinded image review</h2><p>Generation modes are hidden. Assess structural consistency and practical usefulness, not visual attractiveness. The image mapping is retained for later analysis.</p><div className="research-image-grid"><figure><figcaption>Original source floor plan</figcaption><img src={preview.source} alt="Original floor plan" /></figure><figure><figcaption>Image A</figcaption><img src={preview.a} alt="Generated visualization presented as image A" /></figure><figure><figcaption>Image B</figcaption><img src={preview.b} alt="Generated visualization presented as image B" /></figure></div><details><summary>View approved floor-plan interpretation (reference, not ground truth)</summary>{preview.analysis ? <><p>{preview.analysis.summary}</p><p>Approved analysis revision {preview.analysisRevision ?? "unknown"}</p><ul>{preview.analysis.rooms.map((room) => <li key={room.id}>{room.label}: {room.possibleFunction ?? "Function uncertain"}</li>)}</ul><p>{preview.analysis.walls.length} wall findings, {preview.analysis.doors.length} door findings, {preview.analysis.windows.length} window findings, {preview.analysis.relationships.length} spatial relationships recorded.</p>{preview.analysis.uncertainties.map((uncertainty, index) => <p key={index}>Analysis uncertainty: {uncertainty}</p>)}</> : <p>No approved interpretation is available for this version.</p>}</details><div className="research-slider"><p>Drag the comparison handle to compare Image A and Image B.</p><ReactCompareSlider itemOne={<ReactCompareSliderImage src={preview.a} alt="Image A generated visualization" />} itemTwo={<ReactCompareSliderImage src={preview.b} alt="Image B generated visualization" />} aria-label="Blinded comparison of image A and image B" /></div><label>Reviewer code<input aria-label="Reviewer code" value={reviewerCode} maxLength={120} onChange={(e) => setReviewerCode(e.target.value)} /></label><div className="research-form">{Object.entries(reviewFields).map(([key, value]) => <label key={key}>{({ modeAComments: "Image A comments", modeBComments: "Image B comments", architecturalRealism: "Architectural realism", practicalUsefulness: "Practical usefulness", layoutConsistency: "Layout consistency", visualClarity: "Visual clarity", reviewerConfidence: "Reviewer confidence", advantagesAndDisadvantages: "Advantages and disadvantages" } as Record<string, string>)[key]}<textarea value={value} maxLength={3000} onChange={(e) => setReviewFields({ ...reviewFields, [key]: e.target.value })} /></label>)}</div><div className="research-actions"><button disabled={busy || Boolean(selectedExperiment.comparisons.find((p) => p.pairId === previewPairId)?.qualitativeReview)} onClick={() => void saveBlindReview()}>Save blinded review</button><button onClick={() => setPreview(null)}>Close image review</button></div><p>Existing reviews: {selectedExperiment.comparisons.filter((p) => p.qualitativeReview).length}. Human comments are stored separately from generation metadata.</p></section>}
     </>}
   </main></>;

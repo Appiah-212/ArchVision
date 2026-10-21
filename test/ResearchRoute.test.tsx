@@ -1,11 +1,11 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const auth = vi.hoisted(() => ({ state: { isSignedIn: true, userName: "Researcher", userId: "owner-1", signIn: vi.fn() } }));
+const auth = vi.hoisted(() => ({ state: { isSignedIn: true, userName: "Researcher", userId: "owner-1", signIn: vi.fn() }, location: { key: "initial" } }));
 const actions = vi.hoisted(() => ({ getResearchWorkspace: vi.fn(), saveResearchWorkspace: vi.fn(), getProjectById: vi.fn() }));
 vi.mock("react-router", async () => {
   const actual = await vi.importActual<typeof import("react-router")>("react-router");
-  return { ...actual, useOutletContext: () => auth.state, useNavigate: () => vi.fn() };
+  return { ...actual, useOutletContext: () => auth.state, useNavigate: () => vi.fn(), useLocation: () => auth.location };
 });
 vi.mock("../lib/puter.action", () => actions);
 import Research from "../app/routes/research";
@@ -34,6 +34,34 @@ describe("Research Evaluation dashboard", () => {
     render(<Research />);
     await waitFor(() => expect(actions.getResearchWorkspace).toHaveBeenCalledTimes(1));
     expect(actions.getProjectById).not.toHaveBeenCalled();
+    expect(actions.saveResearchWorkspace).not.toHaveBeenCalled();
+  });
+  it("keeps saved experiment records while hiding their dashboard until requested", async () => {
+    actions.getResearchWorkspace.mockResolvedValue({
+      workspace: { schemaVersion: 1, datasets: [], experiments: [{
+        experimentId: "experiment-1", experimentName: "Saved pilot", researchQuestion: "Question",
+        protocolVersion: "archvision-pilot-v1", datasetIdentifier: "dataset-1", sourceProjectIds: [],
+        baselineRenderVersionIds: [], enhancedRenderVersionIds: [], evaluationRecordIds: [],
+        evaluationRubricVersion: "archvision-structural-fidelity-v1", generationModelIdentifiers: [],
+        promptTemplateVersions: [], configurationSnapshots: [], generationSnapshots: [],
+        analysisRevisionIdentifiers: [], experimentalConditions: { controlledVariables: [], uncontrolledVariables: [], notes: [] },
+        comparisons: [], blindReviewEnabled: true, createdAt: "2026-10-20T00:00:00.000Z",
+        updatedAt: "2026-10-20T00:00:00.000Z", experimentStatus: "PLANNED", notes: [], limitations: [],
+      }] }, projects: [], retrievalLatencyMs: 2,
+    });
+    const { rerender } = render(<Research />);
+    const experimentPicker = await screen.findByRole("combobox", { name: "Research experiment" });
+    expect(screen.getByRole("option", { name: "Saved pilot" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Saved pilot" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show experiment dashboard" })).toBeDisabled();
+    fireEvent.change(experimentPicker, { target: { value: "experiment-1" } });
+    expect(await screen.findByRole("button", { name: "Show experiment dashboard" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Show experiment dashboard" }));
+    expect(await screen.findByRole("heading", { name: "Saved pilot" })).toBeInTheDocument();
+    auth.location.key = "returned-to-research";
+    rerender(<Research />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show experiment dashboard" })).toBeDisabled());
+    expect(screen.queryByRole("heading", { name: "Saved pilot" })).not.toBeInTheDocument();
     expect(actions.saveResearchWorkspace).not.toHaveBeenCalled();
   });
   it("uses a friendly residence label and explains when an enhanced render is missing", async () => {

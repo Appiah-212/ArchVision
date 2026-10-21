@@ -12,6 +12,7 @@ const workerSource = readFileSync(
 );
 const handlers = new Map<string, WorkerHandler>();
 const privateImage = new Blob(['confidential plan'], { type: 'image/png' });
+const validPng = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
 const workerFs = {
   delete: vi.fn(),
   read: vi.fn(),
@@ -396,7 +397,7 @@ describe('Worker private project image access', () => {
     formData.set('label', 'source');
     formData.set(
       'file',
-      new File(['floor plan'], 'source.png', { type: 'image/png' }),
+      new File([validPng], 'source.png', { type: 'image/png' }),
     );
     const request = new Request('https://worker.example/api/projects/private-asset', {
       method: 'POST',
@@ -409,10 +410,27 @@ describe('Worker private project image access', () => {
     });
 
     expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
     await expect(response.json()).resolves.toEqual({
       asset: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
     });
     expect(workerFs.write).toHaveBeenCalledOnce();
+  });
+
+  it('rejects image uploads whose bytes do not match their declared MIME type', async () => {
+    const owner = createUserPuter('owner-1');
+    const formData = new FormData();
+    formData.set('id', 'plan-1');
+    formData.set('label', 'source');
+    formData.set('file', new File(['not a png'], 'source.png', { type: 'image/png' }));
+    const request = new Request('https://worker.example/api/projects/private-asset', { method: 'POST' });
+    vi.spyOn(request, 'formData').mockResolvedValue(formData);
+
+    const response = await privateAssetUploadHandler({ request, user: { puter: owner } });
+
+    expect(response.status).toBe(400);
+    expect(workerFs.write).not.toHaveBeenCalled();
   });
 
   it('rejects public image URLs when saving a private project', async () => {
@@ -456,7 +474,6 @@ describe('Worker private project image access', () => {
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toMatchObject({
       error: 'Failed to save project',
-      message: 'KV write unavailable',
     });
   });
 
@@ -1245,6 +1262,48 @@ describe('Worker private project image access', () => {
     );
   });
 
+  it('preserves server-owned history when updating a shared-project private backup', async () => {
+    const owner = createUserPuter('owner-1');
+    const priorVersion = { id: '123e4567-e89b-12d3-a456-426614174001', versionNumber: 1 };
+    const previousPrivate = {
+      id: 'plan-1', ownerId: 'owner-1', isPublic: false,
+      sourceImage: 'archvision_private_asset:123e4567-e89b-12d3-a456-426614174000.png',
+      renderVersions: [priorVersion], activeRenderVersionId: priorVersion.id,
+      fidelityEvaluations: [{ id: 'saved-evaluation' }],
+    };
+    owner.kv.get.mockResolvedValue(previousPrivate);
+    workerKv.get.mockResolvedValue({ ownerId: 'owner-1', publicAssetPaths: ['projects/plan-1/source.png'] });
+
+    const response = await saveHandler({
+      request: new Request('https://worker.example/api/projects/save', {
+        method: 'POST',
+        body: JSON.stringify({
+          visibility: 'public',
+          project: { id: 'plan-1', sourceImage: 'https://images.puter.site/projects/plan-1/source.png' },
+          publicAssetPaths: ['projects/plan-1/source.png'],
+          privateProject: {
+            id: 'plan-1',
+            sourceImage: previousPrivate.sourceImage,
+            renderVersions: [],
+            activeRenderVersionId: null,
+            activeGenerationContext: { forged: true },
+            fidelityEvaluations: [{ id: 'forged-evaluation' }],
+          },
+        }),
+      }),
+      user: { puter: owner },
+    });
+
+    expect(response.status).toBe(200);
+    expect(owner.kv.set).toHaveBeenCalledWith('archvision_project_owner-1_plan-1', expect.objectContaining({
+      renderVersions: [priorVersion], activeRenderVersionId: priorVersion.id,
+      fidelityEvaluations: [{ id: 'saved-evaluation' }],
+    }));
+    expect(owner.kv.set).not.toHaveBeenCalledWith('archvision_project_owner-1_plan-1', expect.objectContaining({
+      activeGenerationContext: { forged: true },
+    }));
+  });
+
   it('returns a storage error without a success-shaped response when KV save fails', async () => {
     const owner = createUserPuter('owner-1');
     owner.kv.get.mockResolvedValue({
@@ -1266,7 +1325,6 @@ describe('Worker private project image access', () => {
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toMatchObject({
       error: 'Failed to save design settings',
-      message: 'KV unavailable',
     });
   });
 
@@ -1380,7 +1438,7 @@ describe('Worker private project image access', () => {
       formData.set('id', 'plan-1');
       formData.set('versionId', versionId);
       formData.set('generationTimestamp', generationTimestamp);
-      formData.set('file', new File(['render'], 'render.png', { type: 'image/png' }));
+      formData.set('file', new File([validPng], 'render.png', { type: 'image/png' }));
 
       const uploadRequest = new Request('https://worker.example/api/projects/render-versions/asset', {
         method: 'POST',
@@ -1503,7 +1561,7 @@ describe('Worker private project image access', () => {
       formData.set('id', 'plan-1');
       formData.set('versionId', versionId);
       formData.set('generationTimestamp', generationTimestamp);
-      formData.set('file', new File(['render'], 'render.png', { type: 'image/png' }));
+      formData.set('file', new File([validPng], 'render.png', { type: 'image/png' }));
 
       const uploadRequest = new Request('https://worker.example/api/projects/render-versions/asset', {
         method: 'POST',

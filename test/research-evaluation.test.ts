@@ -46,6 +46,11 @@ describe("Phase 2.6 research evaluation", () => {
     const csv = experimentExportCsv(experiment, { ...workspace, experiments: [experiment] }, [project]);
     expect(csv).toContain("paired_difference_enhanced_minus_baseline"); expect(csv).toContain("Plan-001"); expect(csv).not.toContain(projectId);
   });
+  it("escapes spreadsheet formulas preceded by whitespace in research CSV fields", () => {
+    const unsafe = { ...experiment, comparisons: experiment.comparisons.map((pair) => ({ ...pair, limitations: ["  \t=HYPERLINK(\"https://example.invalid\")"] })) };
+    const csv = experimentExportCsv(unsafe, { ...workspace, experiments: [unsafe] }, [project]);
+    expect(csv).toContain("'  \t=HYPERLINK");
+  });
   it("preserves empty dataset and experiment states without invented rows", () => {
     const empty = validateResearchWorkspace({ schemaVersion: 1, datasets: [], experiments: [] });
     expect(empty).toEqual({ schemaVersion: 1, datasets: [], experiments: [] });

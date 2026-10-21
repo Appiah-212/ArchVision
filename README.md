@@ -254,4 +254,16 @@ Use **Export JSON** or **Export CSV** for the selected experiment. Exports inclu
 
 ### Research limitations
 
-The output is a conceptual image, not verified CAD/BIM geometry. Human assessment is subjective and affected by perspective, occlusion, and reviewer interpretation. The approved analysis is reference information, not ground truth. Generation runs can differ in prompt, settings, time, stochastic output, and other conditions. Small convenience samples limit generalization. Score coverage and all missing/unassessable observations must accompany score reporting. No experiments, observations, accuracy percentages, significance tests, or outcomes are fabricated. Phase 2.7 is outside this milestone.
+The output is a conceptual image, not verified CAD/BIM geometry. Human assessment is subjective and affected by perspective, occlusion, and reviewer interpretation. The approved analysis is reference information, not ground truth. Generation runs can differ in prompt, settings, time, stochastic output, and other conditions. Small convenience samples limit generalization. Score coverage and all missing/unassessable observations must accompany score reporting. No experiments, observations, accuracy percentages, significance tests, or outcomes are fabricated. Saved experiment records remain in the workspace, while the dashboard is hidden until explicitly opened.
+
+## Phase 2.7 hardening and verification
+
+The final architecture, security review, research methodology, regression plan, manual validation matrix, and deployment checklist are documented here:
+
+- [Phase 2 final architecture](docs/phase-2-final-architecture.md)
+- [Security and privacy review](docs/phase-2-security-review.md)
+- [Research methodology and integrity](docs/phase-2-research-methodology.md)
+- [Regression and manual validation plan](docs/phase-2-regression-test-plan.md)
+- [Deployment readiness](docs/phase-2-deployment-readiness.md)
+
+Useful local checks are `npm run typecheck`, `npm run test:run`, `npm run build`, and `git diff --check`. Automated tests use mocks and do not make billable AI calls. `VITE_PUTER_WORKER_URL` is the client-visible Worker endpoint; do not place secrets in Vite variables. Phase 2.7 does not deploy the app or Worker.
